@@ -49,8 +49,8 @@ Kafka Consumer listens: feature-flags.events (broadcast)
 
 ```xml
 <dependency>
-    <groupId>cassio</groupId>
-    <artifactId>feature-flag-core</artifactId>
+    <groupId>io.github.cassiocintra</groupId>
+    <artifactId>feature-flag
     <version>1.0.0</version>
 </dependency>
 ```
