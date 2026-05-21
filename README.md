@@ -1,11 +1,13 @@
-# feature-flag-core
+# feature-flag
 
-Shared feature flag library with:
+Shared feature flag library for Spring Boot services with:
+
 - **HTTP Bootstrap** — fetches all service flags on application startup
-- **Kafka Consumer** — keeps the cache up to date in real time via events
+- **Multi-broker Messaging** — keeps the cache up to date in real time via Kafka, RabbitMQ, or ActiveMQ Artemis
 - **Caffeine Local Cache** — zero-latency lookups, no time-based expiration
 - **Layered Fallback** — never brings down the application if the flag microservice is unavailable
 - **Field Injection** — inject the live flag value into a `Boolean` field for in-method conditional logic
+- **Optional OAuth2** — automatically attaches a Bearer token to the HTTP bootstrap when `OAuth2AuthorizedClientManager` is present
 
 ---
 
@@ -18,29 +20,27 @@ Application starts
 HTTP Bootstrap → GET /flags/{service-name}/{environment}
       │
       ├── Success → populates Caffeine cache with all flags for this service and environment
-      └── Failure → application starts with configured default values
-      │             (startup is not blocked)
-      ▼
-Kafka Consumer listens: feature-flags.events (broadcast)
+      └── Failure → application starts with configured default values (startup is not blocked)
       │
-      ├── CREATED         → filters by serviceName, adds flag as disabled (false)
-      ├── UPDATED         → filters by serviceName + environmentName, updates cache value
-      └── DELETED         → removes from cache regardless of environment
+      ▼
+Messaging consumer listens: feature-flags.events (Kafka / RabbitMQ / Artemis)
+      │
+      ├── CREATED  → filters by serviceName, adds flag as disabled (false)
+      ├── UPDATED  → filters by serviceName + environmentName, updates cache value
+      └── DELETED  → removes from cache regardless of environment
       │
       ▼
 @FeatureFlag intercepts the call
       │
       ├── Cache hit  → uses the cached value
       └── Cache miss → cascading fallback:
-                       1. feature-flag.defaults.* (application.properties)
+                       1. feature-flag.defaults.* (application.yaml)
                        2. @FeatureFlag(enabledByDefault)
-
       │
       ▼
 @FeatureFlag on a Boolean field (optional)
       │
       └── Before each method call → field is updated with the current cache value
-                                    (always in sync with Kafka events)
 ```
 
 ---
@@ -57,26 +57,60 @@ Kafka Consumer listens: feature-flags.events (broadcast)
 
 ---
 
-## Configuration (consumer service application.properties)
+## Configuration
 
-```properties
-# Service identity
-feature-flag.service-name=checkout-service
-feature-flag.environment=${spring.profiles.active:dev}
-feature-flag.flag-service-url=http://flag-management-service
+### Minimal (application.yaml)
 
-# Kafka
-spring.kafka.bootstrap-servers=localhost:9092
-
-# (Optional) Customize the topic and consumer group-id
-feature-flag.kafka.topic=feature-flags.events
-feature-flag.kafka.group-id=checkout-service-flag-consumer
+```yaml
+feature-flag:
+  service-name: checkout-service
+  environment: ${spring.profiles.active:dev}
+  flag-service-url: http://flag-management-service/feature-flag/v1
 
 # Defaults — used ONLY if the HTTP bootstrap fails
 # Take precedence over @FeatureFlag(enabledByDefault)
-feature-flag.defaults.new-checkout=false
-feature-flag.defaults.pix-payment=false
+  defaults:
+    new-checkout: false
+    pix-payment: false
 ```
+
+### Messaging broker (choose one)
+
+**Kafka:**
+```yaml
+spring:
+  kafka:
+    bootstrap-servers: localhost:9092
+
+feature-flag:
+  kafka:
+    topic: feature-flags.events          # default: feature-flags.events
+    group-id: feature-flag-consumer      # default: feature-flag-consumer
+```
+
+**RabbitMQ:**
+```yaml
+spring:
+  rabbitmq:
+    host: localhost
+
+feature-flag:
+  rabbit:
+    queue: feature-flags.events          # default: feature-flags.events
+```
+
+**ActiveMQ Artemis:**
+```yaml
+spring:
+  artemis:
+    broker-url: tcp://localhost:61616
+
+feature-flag:
+  artemis:
+    queue: feature-flags.events          # default: feature-flags.events
+```
+
+> Each broker requires its own starter — see [Messaging support](#messaging-support) below.
 
 ---
 
@@ -103,7 +137,6 @@ public void payWithPix() { ... }
 public class BetaController { ... }
 
 // Field injection — Boolean field updated before every method call
-// Useful for branching between a new and a legacy flow within the same method
 @Service
 public class PaymentService {
 
@@ -112,9 +145,9 @@ public class PaymentService {
 
     public void process(Order order) {
         if (Boolean.TRUE.equals(newPaymentFlowEnabled)) {
-            // new flow — executes when flag is enabled
+            // new flow
         } else {
-            // legacy flow — executes when flag is disabled
+            // legacy flow
         }
     }
 }
@@ -139,13 +172,54 @@ public class GlobalExceptionHandler {
 
 ---
 
-## Kafka Events
+## Messaging support
 
-The flag microservice publishes broadcast events to the `feature-flags.events` topic.
+Each broker is optional — only add the starter for the broker your service uses.
+The library detects which one is configured and activates the correct consumer automatically.
+
+| Broker | Starter | Activation property |
+|---|---|---|
+| Kafka | `spring-boot-starter-kafka` (via `spring-kafka`) | `spring.kafka.bootstrap-servers` |
+| RabbitMQ | `spring-boot-starter-amqp` | `spring.rabbitmq.host` |
+| ActiveMQ Artemis | `spring-boot-starter-artemis` | `spring.artemis.broker-url` |
+
+> **Note:** ActiveMQ Classic (`spring-boot-starter-activemq`) is not supported due to known security vulnerabilities (CVE-2026-33227, CVE-2026-34197). Use ActiveMQ Artemis instead.
+
+### Kafka dependency
+
+```xml
+<dependency>
+    <groupId>org.springframework.kafka</groupId>
+    <artifactId>spring-kafka</artifactId>
+</dependency>
+```
+
+### RabbitMQ dependency
+
+```xml
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-amqp</artifactId>
+</dependency>
+```
+
+### ActiveMQ Artemis dependency
+
+```xml
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-artemis</artifactId>
+</dependency>
+```
+
+---
+
+## Messaging events
+
+The flag microservice publishes broadcast events to the configured topic.
 Each consumer service filters relevant events by `serviceName` and `environmentName`.
 
-**CREATED** — published when a flag is created. Always starts as disabled for all environments.
-`environmentName` and `enabled` are not present:
+**CREATED** — flag always starts disabled for all environments:
 ```json
 {
   "flagName":    "new-checkout",
@@ -154,19 +228,18 @@ Each consumer service filters relevant events by `serviceName` and `environmentN
 }
 ```
 
-**UPDATED** — published when a flag value changes in a specific environment:
+**UPDATED** — flag value changed in a specific environment:
 ```json
 {
-  "flagName":         "new-checkout",
-  "serviceName":      "checkout-service",
-  "environmentName":  "prod",
-  "enabled":          true,
-  "action":           "UPDATED"
+  "flagName":        "new-checkout",
+  "serviceName":     "checkout-service",
+  "environmentName": "prod",
+  "enabled":         true,
+  "action":          "UPDATED"
 }
 ```
 
-**DELETED** — published when a flag is removed. `environmentName` and `enabled` are not present
-since deletion affects all environments:
+**DELETED** — flag removed from all environments:
 ```json
 {
   "flagName":    "new-checkout",
@@ -177,49 +250,15 @@ since deletion affects all environments:
 
 ---
 
-## Fallback hierarchy
+## OAuth2 support (optional)
 
-When a flag is not in the cache (bootstrap failed or flag not yet received via Kafka):
-
-```
-1. feature-flag.defaults.*        ← application.properties of the consumer service
-2. @FeatureFlag(enabledByDefault) ← value defined directly on the annotation
-```
-
-The cache never expires by time — it relies on Kafka to keep the state up to date.
-Flags removed via `DELETED` are evicted from the cache immediately.
-
----
-
-## Bean behavior (Autoconfigure)
-
-Beans are registered automatically but only activated when conditions are met:
-
-| Bean | Condition |
-|---|---|
-| `FeatureFlagCacheService` | Always active |
-| `FeatureFlagAspect` | Always active |
-| `FeatureFlagFieldInjectorAspect` | Always active |
-| `FeatureFlagBootstrap` | Requires `feature-flag.flag-service-url` |
-| `featureFlagRestClient` (no auth) | Requires `feature-flag.flag-service-url` + no `OAuth2AuthorizedClientManager` in context |
-| `featureFlagRestClient` (OAuth2) | Requires `feature-flag.flag-service-url` + `spring-boot-starter-oauth2-client` on classpath + `OAuth2AuthorizedClientManager` bean in context |
-| `FeatureFlagKafkaConsumer` | Requires `spring.kafka.bootstrap-servers` |
-
-This allows the library to be used in tests or environments without Kafka or HTTP without startup errors.
-
----
-
-## OAuth2 Support (optional)
-
-If the flag microservice requires JWT authentication, the library can automatically attach
-a Bearer token to the HTTP bootstrap request using Spring's `OAuth2AuthorizedClientManager`.
-
-This is fully optional — services without OAuth2 are not affected.
+If the flag microservice requires JWT authentication, the library automatically attaches
+a Bearer token using Spring's `OAuth2AuthorizedClientManager` — no extra configuration
+in the library is needed.
 
 ### How to enable
 
-**1. Add the OAuth2 client dependency to your service:**
-
+**1. Add the dependency:**
 ```xml
 <dependency>
     <groupId>org.springframework.boot</groupId>
@@ -228,7 +267,6 @@ This is fully optional — services without OAuth2 are not affected.
 ```
 
 **2. Declare an `OAuth2AuthorizedClientManager` bean:**
-
 ```java
 @Configuration
 public class OAuth2Config {
@@ -246,15 +284,13 @@ public class OAuth2Config {
         DefaultOAuth2AuthorizedClientManager manager =
                 new DefaultOAuth2AuthorizedClientManager(
                         clientRegistrationRepository, authorizedClientRepository);
-
         manager.setAuthorizedClientProvider(provider);
         return manager;
     }
 }
 ```
 
-**3. Configure your OAuth2 client in `application.yaml`:**
-
+**3. Configure your OAuth2 client:**
 ```yaml
 spring:
   security:
@@ -271,55 +307,78 @@ spring:
             issuer-uri: http://keycloak-host/realms/my-realm
 ```
 
-When the `OAuth2AuthorizedClientManager` bean is present, the library automatically
-uses `OAuth2ClientHttpRequestInterceptor` to fetch, cache, and renew the token.
-No extra configuration on the library side is required.
+When the `OAuth2AuthorizedClientManager` bean is present, the library uses
+`OAuth2ClientHttpRequestInterceptor` to fetch, cache, and renew the token automatically.
 
-### Without OAuth2
+---
 
-If `spring-boot-starter-oauth2-client` is not on the classpath or no
-`OAuth2AuthorizedClientManager` bean is declared, the bootstrap HTTP request
-is sent without authentication — the previous behavior is preserved.
+## Fallback hierarchy
+
+When a flag is not in the cache (bootstrap failed or Kafka event not yet received):
+
+```
+1. feature-flag.defaults.*        ← application.yaml of the consumer service
+2. @FeatureFlag(enabledByDefault) ← value defined on the annotation (default: false)
+```
+
+The cache never expires by time — it relies on messaging events to stay up to date.
+Flags removed via `DELETED` are evicted from the cache immediately.
+
+---
+
+## Bean behavior (Autoconfigure)
+
+All beans are registered conditionally — no errors if a broker or HTTP endpoint is absent:
+
+| Bean | Condition |
+|---|---|
+| `FeatureFlagCacheService` | Always active |
+| `FeatureFlagEventProcessor` | Always active |
+| `FeatureFlagAspect` | Always active |
+| `FeatureFlagFieldInjectorAspect` | Always active |
+| `FeatureFlagBootstrap` | Requires `feature-flag.flag-service-url` |
+| `featureFlagRestClient` (no auth) | Requires `feature-flag.flag-service-url` + no `OAuth2AuthorizedClientManager` in context |
+| `featureFlagRestClient` (OAuth2) | Requires `feature-flag.flag-service-url` + `spring-boot-starter-oauth2-client` + `OAuth2AuthorizedClientManager` bean |
+| `FeatureFlagKafkaConsumer` | Requires `spring-kafka` on classpath + `spring.kafka.bootstrap-servers` |
+| `FeatureFlagRabbitConsumer` | Requires `spring-amqp` on classpath + `spring.rabbitmq.host` |
+| `FeatureFlagActiveMqConsumer` | Requires `spring-boot-starter-artemis` on classpath + `spring.artemis.broker-url` |
 
 ---
 
 ## Project structure
 
 ```
-feature-flag-core/
+feature-flag/
 ├── pom.xml
 └── src/
-    ├── main/java/cassio/featureflag/
-    │   ├── annotation/
-    │   │   └── FeatureFlag.java                ← the annotation
-    │   ├── aspect/
-    │   │   ├── FeatureFlagAspect.java              ← intercepts methods via AOP, blocks if disabled
-    │   │   └── FeatureFlagFieldInjectorAspect.java ← updates @FeatureFlag Boolean fields before each method
-    │   ├── bootstrap/
-    │   │   └── FeatureFlagBootstrap.java       ← HTTP fetch on startup
-    │   ├── cache/
-    │   │   └── FeatureFlagCacheService.java    ← Caffeine cache, source of truth
-    │   ├── config/
-    │   │   ├── FeatureFlagAutoConfig.java      ← registers all beans
-    │   │   └── FeatureFlagProperties.java      ← reads application.properties
-    │   ├── exception/
-    │   │   └── FeatureDisabledException.java   ← thrown when flag is disabled
-    │   ├── kafka/
-    │   │   └── FeatureFlagKafkaConsumer.java   ← updates cache via Kafka events
-    │   └── model/
-    │       └── FeatureFlagEvent.java           ← Kafka event model
-    └── test/java/cassio/featureflag/
+    └── main/java/cassio/annotations/
+        ├── FeatureFlag.java                         ← the annotation
         ├── aspect/
-        │   ├── FeatureFlagAspectTest.java                  ← tests AOP interception
-        │   ├── FeatureFlagAspectTestConfig.java
-        │   ├── FeatureFlagFieldInjectorAspectTest.java     ← tests Boolean field injection
-        │   ├── FeatureFlagFieldInjectorAspectTestConfig.java
-        │   ├── FakeService.java
-        │   └── FakeServiceWithFlagField.java
+        │   ├── FeatureFlagAspect.java               ← intercepts methods via AOP, blocks if disabled
+        │   └── FeatureFlagFieldInjectorAspect.java  ← updates @FeatureFlag Boolean fields before each method
+        ├── bootstrap/
+        │   └── FeatureFlagBootstrap.java            ← HTTP fetch on startup
         ├── cache/
-        │   └── FeatureFlagCacheServiceTest.java
+        │   └── FeatureFlagCacheService.java         ← Caffeine cache, source of truth
+        ├── config/
+        │   ├── FeatureFlagAutoConfig.java           ← registers core beans
+        │   ├── FeatureFlagOAuth2Config.java         ← OAuth2 RestClient (optional)
+        │   └── FeatureFlagProperties.java           ← reads application.yaml
         ├── exception/
-        │   └── FeatureDisabledExceptionTest.java
-        └── kafka/
-            └── FeatureFlagKafkaConsumerTest.java
+        │   └── FeatureDisabledException.java        ← thrown when flag is disabled
+        ├── messaging/
+        │   ├── FeatureFlagEventProcessor.java       ← shared event processing logic
+        │   ├── activemq/
+        │   │   ├── FeatureFlagActiveMqConfig.java   ← Artemis config (optional)
+        │   │   └── FeatureFlagActiveMqConsumer.java ← Artemis JMS listener
+        │   ├── kafka/
+        │   │   ├── FeatureFlagKafkaConfig.java      ← Kafka config (optional)
+        │   │   └── FeatureFlagKafkaConsumer.java    ← Kafka listener
+        │   └── rabbit/
+        │       ├── FeatureFlagRabbitConfig.java     ← RabbitMQ config (optional)
+        │       └── FeatureFlagRabbitConsumer.java   ← RabbitMQ listener
+        ├── model/
+        │   └── FeatureFlagEvent.java                ← messaging event model
+        └── utils/
+            └── JsonUtils.java                       ← Jackson 3 serialization helper
 ```
