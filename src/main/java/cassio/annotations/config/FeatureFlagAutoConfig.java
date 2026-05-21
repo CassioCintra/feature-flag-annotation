@@ -9,8 +9,7 @@ import cassio.annotations.model.FeatureFlagEvent;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.autoconfigure.condition.*;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.EnableAspectJAutoProxy;
@@ -92,11 +91,13 @@ public class FeatureFlagAutoConfig {
     }
 
     /**
-     * RestClient pre-configured with the flag service base URL.
-     * Only registered if {@code feature-flag.flag-service-url} is configured.
+     * RestClient sem autenticação — usado quando OAuth2AuthorizedClientManager
+     * não está disponível no contexto (consumidor sem oauth2-client).
      */
     @Bean
     @ConditionalOnProperty(prefix = "feature-flag", name = "flag-service-url")
+    @ConditionalOnMissingBean(name = "featureFlagRestClient")
+    @ConditionalOnMissingClass("org.springframework.security.oauth2.client.OAuth2AuthorizedClientManager")
     public RestClient featureFlagRestClient(FeatureFlagProperties properties) {
         return RestClient.builder()
                 .baseUrl(properties.getFlagServiceUrl())

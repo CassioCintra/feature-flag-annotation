@@ -42,6 +42,7 @@
         <spring-boot.version>4.0.6</spring-boot.version>
         <logstash-logback.version>7.4</logstash-logback.version>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <gpg.executable>gpg</gpg.executable>
     </properties>
 
     <dependencyManagement>
@@ -89,6 +90,12 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-autoconfigure-processor</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-oauth2-client</artifactId>
             <optional>true</optional>
         </dependency>
 
@@ -144,6 +151,9 @@
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-gpg-plugin</artifactId>
                 <version>3.2.4</version>
+                <configuration>
+                    <executable>${gpg.executable}</executable>
+                </configuration>
                 <executions>
                     <execution>
                         <id>sign-artifacts</id>

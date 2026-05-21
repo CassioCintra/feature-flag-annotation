@@ -50,7 +50,7 @@ Kafka Consumer listens: feature-flags.events (broadcast)
 ```xml
 <dependency>
     <groupId>io.github.cassiocintra</groupId>
-    <artifactId>feature-flag
+    <artifactId>feature-flag</artifactId>
     <version>1.0.0</version>
 </dependency>
 ```
@@ -201,9 +201,85 @@ Beans are registered automatically but only activated when conditions are met:
 | `FeatureFlagAspect` | Always active |
 | `FeatureFlagFieldInjectorAspect` | Always active |
 | `FeatureFlagBootstrap` | Requires `feature-flag.flag-service-url` |
+| `featureFlagRestClient` (no auth) | Requires `feature-flag.flag-service-url` + no `OAuth2AuthorizedClientManager` in context |
+| `featureFlagRestClient` (OAuth2) | Requires `feature-flag.flag-service-url` + `spring-boot-starter-oauth2-client` on classpath + `OAuth2AuthorizedClientManager` bean in context |
 | `FeatureFlagKafkaConsumer` | Requires `spring.kafka.bootstrap-servers` |
 
 This allows the library to be used in tests or environments without Kafka or HTTP without startup errors.
+
+---
+
+## OAuth2 Support (optional)
+
+If the flag microservice requires JWT authentication, the library can automatically attach
+a Bearer token to the HTTP bootstrap request using Spring's `OAuth2AuthorizedClientManager`.
+
+This is fully optional — services without OAuth2 are not affected.
+
+### How to enable
+
+**1. Add the OAuth2 client dependency to your service:**
+
+```xml
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-oauth2-client</artifactId>
+</dependency>
+```
+
+**2. Declare an `OAuth2AuthorizedClientManager` bean:**
+
+```java
+@Configuration
+public class OAuth2Config {
+
+    @Bean
+    public OAuth2AuthorizedClientManager authorizedClientManager(
+            ClientRegistrationRepository clientRegistrationRepository,
+            OAuth2AuthorizedClientRepository authorizedClientRepository) {
+
+        OAuth2AuthorizedClientProvider provider =
+                OAuth2AuthorizedClientProviderBuilder.builder()
+                        .clientCredentials()
+                        .build();
+
+        DefaultOAuth2AuthorizedClientManager manager =
+                new DefaultOAuth2AuthorizedClientManager(
+                        clientRegistrationRepository, authorizedClientRepository);
+
+        manager.setAuthorizedClientProvider(provider);
+        return manager;
+    }
+}
+```
+
+**3. Configure your OAuth2 client in `application.yaml`:**
+
+```yaml
+spring:
+  security:
+    oauth2:
+      client:
+        registration:
+          feature-flags:
+            client-id: my-service
+            client-secret: ${CLIENT_SECRET}
+            authorization-grant-type: client_credentials
+            scope: openid
+        provider:
+          feature-flags:
+            issuer-uri: http://keycloak-host/realms/my-realm
+```
+
+When the `OAuth2AuthorizedClientManager` bean is present, the library automatically
+uses `OAuth2ClientHttpRequestInterceptor` to fetch, cache, and renew the token.
+No extra configuration on the library side is required.
+
+### Without OAuth2
+
+If `spring-boot-starter-oauth2-client` is not on the classpath or no
+`OAuth2AuthorizedClientManager` bean is declared, the bootstrap HTTP request
+is sent without authentication — the previous behavior is preserved.
 
 ---
 
