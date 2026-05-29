@@ -3,6 +3,7 @@ package cassio.annotations.config;
 import cassio.annotations.aspect.FeatureFlagAspect;
 import cassio.annotations.aspect.FeatureFlagFieldInjectorAspect;
 import cassio.annotations.bootstrap.FeatureFlagBootstrap;
+import cassio.annotations.bootstrap.FeatureFlagScanner;
 import cassio.annotations.cache.FeatureFlagCacheService;
 import cassio.annotations.messaging.FeatureFlagEventProcessor;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
@@ -10,6 +11,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.EnableAspectJAutoProxy;
 import org.springframework.web.client.RestClient;
@@ -66,6 +68,12 @@ public class FeatureFlagAutoConfig {
         return new FeatureFlagFieldInjectorAspect(cacheService);
     }
 
+    @Bean
+    @ConditionalOnMissingBean
+    public FeatureFlagScanner featureFlagScanner(ApplicationContext ctx) {
+        return new FeatureFlagScanner(ctx);
+    }
+
     /**
      * HTTP bootstrap — only registered if {@code feature-flag.flag-service-url} is configured.
      */
@@ -74,8 +82,9 @@ public class FeatureFlagAutoConfig {
     @ConditionalOnProperty(prefix = "feature-flag", name = "flag-service-url")
     public FeatureFlagBootstrap featureFlagBootstrap(FeatureFlagProperties properties,
                                                      FeatureFlagCacheService cacheService,
-                                                     RestClient featureFlagRestClient) {
-        return new FeatureFlagBootstrap(properties, cacheService, featureFlagRestClient);
+                                                     RestClient featureFlagRestClient,
+                                                     FeatureFlagScanner featureFlagScanner) {
+        return new FeatureFlagBootstrap(properties, cacheService, featureFlagRestClient, featureFlagScanner);
     }
 
     /**

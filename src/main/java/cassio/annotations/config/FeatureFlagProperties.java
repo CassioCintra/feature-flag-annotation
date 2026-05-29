@@ -25,6 +25,7 @@ public class FeatureFlagProperties {
     private String serviceName;
     private String environment = "dev";
     private String flagServiceUrl;
+    private boolean strict = false;
     private Map<String, Boolean> defaults = new HashMap<>();
 
     public String getServiceName() { return serviceName; }
@@ -36,13 +37,12 @@ public class FeatureFlagProperties {
     public String getFlagServiceUrl() { return flagServiceUrl; }
     public void setFlagServiceUrl(String flagServiceUrl) { this.flagServiceUrl = flagServiceUrl; }
 
+    public boolean isStrict() { return strict; }
+    public void setStrict(boolean strict) { this.strict = strict; }
+
     public Map<String, Boolean> getDefaults() { return defaults; }
     public void setDefaults(Map<String, Boolean> defaults) { this.defaults = defaults; }
 
-    /**
-     * Returns the configured default for the flag, or the annotation default
-     * if no properties default is defined.
-     */
     public boolean getDefault(String flagName, boolean annotationDefault) {
         return defaults.getOrDefault(flagName, annotationDefault);
     }
