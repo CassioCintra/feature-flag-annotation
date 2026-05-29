@@ -1,5 +1,7 @@
 package cassio.annotations;
 
+import cassio.annotations.model.FlagType;
+
 import java.lang.annotation.Documented;
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
@@ -7,28 +9,36 @@ import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 
 /**
- * Marks a method or class as protected by a feature flag.
+ * Marks a method, class, or field as protected by a feature flag.
  *
- * <p>When invoked, the method checks the local cache to determine if the flag
- * is active for the configured service and environment. The cache is populated
- * on application startup via HTTP bootstrap and kept up to date via Kafka events.
- *
- * <p>Usage examples:
+ * <p>Short form (backward-compatible):
  * <pre>{@code
  * @FeatureFlag("new-checkout")
- * public ResponseEntity<Order> checkout(OrderRequest request) {
- *     // executes only if "new-checkout" is active in the current environment
- * }
- *
- * @FeatureFlag(value = "pix-payment", enabledByDefault = false, message = "Pix unavailable.")
- * public void payWithPix() { ... }
+ * public ResponseEntity<Order> checkout(OrderRequest request) { ... }
  * }</pre>
  *
- * <p>Configure in the consumer service's application.properties:
+ * <p>Full form with metadata used for auto-registration on startup:
+ * <pre>{@code
+ * @FeatureFlag(
+ *   key       = "checkout_v2",
+ *   type      = FlagType.ROLLOUT,
+ *   rollout   = 30,
+ *   envs      = { "production", "staging" },
+ *   tags      = { "payments", "checkout" },
+ *   service   = "checkout-api",
+ *   owner     = "payments-team",
+ *   expiresAt = "2026-09-01"
+ * )
+ * public void processCheckout() { ... }
+ * }</pre>
+ *
+ * <p>Configure in the consumer service's application.yml:
  * <pre>
- * feature-flag.service-name=checkout-service
- * feature-flag.environment=${spring.profiles.active:dev}
- * feature-flag.flag-service-url=http://flag-management-service
+ * feature-flag:
+ *   service-name: checkout-service
+ *   environment: ${spring.profiles.active:dev}
+ *   flag-service-url: http://ms-feature-flags:8081/feature-flag/v1
+ *   strict: true   # blocks startup if any annotated flag is missing from the server
  * </pre>
  */
 @Target({ElementType.FIELD, ElementType.METHOD, ElementType.TYPE})
@@ -36,24 +46,36 @@ import java.lang.annotation.Target;
 @Documented
 public @interface FeatureFlag {
 
-    /**
-     * The feature flag name — must match the name registered
-     * in the flag management microservice.
-     */
-    String value();
+    /** Shorthand for {@link #key()} — {@code @FeatureFlag("foo")} kept for backward compatibility. */
+    String value() default "";
+
+    /** Named flag key. Takes precedence over {@link #value()} when set. */
+    String key() default "";
+
+    FlagType type() default FlagType.BOOLEAN;
+
+    /** Percentage of traffic that receives this flag (0–100). Relevant for ROLLOUT type. */
+    int rollout() default 100;
+
+    /** Environments where this flag applies, e.g. {@code {"production", "staging"}}. */
+    String[] envs() default {};
+
+    String[] tags() default {};
+
+    /** Overrides the global {@code feature-flag.service-name} for this specific flag. */
+    String service() default "";
+
+    String owner() default "";
+
+    /** ISO date after which this flag should be removed, e.g. {@code "2026-09-01"}. */
+    String expiresAt() default "";
 
     /**
-     * Default value used when:
-     * - The HTTP bootstrap failed (flag microservice unavailable)
-     * - The flag has not yet been received via Kafka
-     *
-     * Default: false (safe — feature disabled by default)
+     * Default value used when the flag is absent from cache
+     * (bootstrap failed or flag not yet received via messaging).
      */
     boolean enabledByDefault() default false;
 
-    /**
-     * Message included in the exception when the flag is disabled.
-     * If empty, a default message is used.
-     */
+    /** Message included in the exception when the flag is disabled. */
     String message() default "";
 }
