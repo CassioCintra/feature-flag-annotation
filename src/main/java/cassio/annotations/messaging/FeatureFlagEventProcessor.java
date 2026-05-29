@@ -6,12 +6,8 @@ import cassio.annotations.model.FeatureFlagEvent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/**
- * Shared event processing logic for all messaging consumers (Kafka, RabbitMQ, ActiveMQ).
- *
- * <p>Encapsulates cache update rules and service/environment filtering,
- * keeping each consumer implementation focused solely on message reception.
- */
+import java.util.Map;
+
 public class FeatureFlagEventProcessor {
 
     private static final Logger log = LoggerFactory.getLogger(FeatureFlagEventProcessor.class);
@@ -28,9 +24,9 @@ public class FeatureFlagEventProcessor {
     public void process(FeatureFlagEvent event) {
         log.debug("Event received: {}", event);
         switch (event.getAction()) {
-            case CREATED -> processCreate(event);
-            case UPDATED -> processUpdate(event);
-            case DELETED -> processDelete(event);
+            case CREATED          -> processCreate(event);
+            case UPDATED, TOGGLED -> processUpdateOrToggle(event);
+            case DELETED          -> processDelete(event);
         }
     }
 
@@ -39,18 +35,30 @@ public class FeatureFlagEventProcessor {
             log.debug("Event ignored (different service): {}", event);
             return;
         }
-        cacheService.put(event.getFlagName(), false);
-        log.info("Flag '{}' added to cache: enabled=false [all environments]", event.getFlagName());
-    }
-
-    private void processUpdate(FeatureFlagEvent event) {
-        if (isNotServiceRelevant(event) || isNotEnvironmentRelevant(event)) {
-            log.debug("Event ignored (different service or environment): {}", event);
+        Boolean effective = resolveEffective(event);
+        if (effective == null) {
+            log.debug("Event ignored (environment '{}' not in flag environments): {}",
+                    properties.getEnvironment(), event);
             return;
         }
-        cacheService.put(event.getFlagName(), event.isEnabled());
-        log.info("Flag '{}' updated: enabled={} [environment={}]",
-                event.getFlagName(), event.isEnabled(), event.getEnvironmentName());
+        cacheService.put(event.getFlagName(), effective);
+        log.info("Flag '{}' added to cache: enabled={}", event.getFlagName(), effective);
+    }
+
+    private void processUpdateOrToggle(FeatureFlagEvent event) {
+        if (isNotServiceRelevant(event)) {
+            log.debug("Event ignored (different service): {}", event);
+            return;
+        }
+        Boolean effective = resolveEffective(event);
+        if (effective == null) {
+            log.debug("Event ignored (environment '{}' not in flag environments): {}",
+                    properties.getEnvironment(), event);
+            return;
+        }
+        cacheService.put(event.getFlagName(), effective);
+        log.info("Flag '{}' updated in cache: enabled={} [action={}]",
+                event.getFlagName(), effective, event.getAction());
     }
 
     private void processDelete(FeatureFlagEvent event) {
@@ -64,7 +72,15 @@ public class FeatureFlagEventProcessor {
         return !properties.getServiceName().equals(event.getServiceName());
     }
 
-    private boolean isNotEnvironmentRelevant(FeatureFlagEvent event) {
-        return !properties.getEnvironment().equals(event.getEnvironmentName());
+    /**
+     * Returns null when the current environment is not configured for this flag (event should be ignored).
+     * Otherwise returns the effective enabled state: global enabled AND per-environment state.
+     */
+    private Boolean resolveEffective(FeatureFlagEvent event) {
+        Map<String, Boolean> environments = event.getEnvironments();
+        if (environments == null) return null;
+        Boolean envState = environments.get(properties.getEnvironment());
+        if (envState == null) return null;
+        return Boolean.TRUE.equals(event.isEnabled()) && envState;
     }
 }

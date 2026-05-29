@@ -3,60 +3,31 @@ package cassio.annotations.model;
 import cassio.annotations.utils.JsonUtils;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 
-/**
- * Represents a feature flag event published by the flag management
- * microservice to Kafka.
- *
- * <p>CREATED payload — enabled and environmentName are null (flag starts disabled for all environments):
- * <pre>
- * {
- *   "flagName":    "new-checkout",
- *   "serviceName": "checkout-service",
- *   "action":      "CREATED"
- * }
- * </pre>
- *
- * <p>UPDATED payload — only the environment that changed:
- * <pre>
- * {
- *   "flagName":       "new-checkout",
- *   "serviceName":    "checkout-service",
- *   "environmentName": "prod",
- *   "enabled":        true,
- *   "action":         "UPDATED"
- * }
- * </pre>
- *
- * <p>DELETED payload — enabled and environmentName are null (removes from all environments):
- * <pre>
- * {
- *   "flagName":    "new-checkout",
- *   "serviceName": "checkout-service",
- *   "action":      "DELETED"
- * }
- * </pre>
- */
+import java.util.Map;
+
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class FeatureFlagEvent {
+
     private String flagName;
     private String serviceName;
-    private String environmentName;
+    private Map<String, Boolean> environments;
     private Boolean enabled;
     private Action action;
 
     public enum Action {
         CREATED,
         UPDATED,
+        TOGGLED,
         DELETED
     }
 
     public FeatureFlagEvent() {}
 
-    public FeatureFlagEvent(String flagName, String serviceName, String environmentName,
+    public FeatureFlagEvent(String flagName, String serviceName, Map<String, Boolean> environments,
                             Boolean enabled, Action action) {
         this.flagName = flagName;
         this.serviceName = serviceName;
-        this.environmentName = environmentName;
+        this.environments = environments;
         this.enabled = enabled;
         this.action = action;
     }
@@ -67,8 +38,8 @@ public class FeatureFlagEvent {
     public String getServiceName() { return serviceName; }
     public void setServiceName(String serviceName) { this.serviceName = serviceName; }
 
-    public String getEnvironmentName() { return environmentName; }
-    public void setEnvironmentName(String environmentName) { this.environmentName = environmentName; }
+    public Map<String, Boolean> getEnvironments() { return environments; }
+    public void setEnvironments(Map<String, Boolean> environments) { this.environments = environments; }
 
     public Boolean isEnabled() { return enabled; }
     public void setEnabled(Boolean enabled) { this.enabled = enabled; }

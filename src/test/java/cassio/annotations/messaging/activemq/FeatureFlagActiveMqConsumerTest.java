@@ -10,6 +10,8 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import tools.jackson.databind.json.JsonMapper;
 
+import java.util.Map;
+
 import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
@@ -31,7 +33,7 @@ class FeatureFlagActiveMqConsumerTest {
     @Test
     void shouldDelegateToProcessor() throws Exception {
         FeatureFlagEvent event = new FeatureFlagEvent(
-                "my-flag", "checkout-service", "dev", true, FeatureFlagEvent.Action.UPDATED);
+                "my-flag", "checkout-service", Map.of("dev", true), true, FeatureFlagEvent.Action.UPDATED);
 
         String json = JsonMapper.builder().build().writeValueAsString(event);
         when(textMessage.getText()).thenReturn(json);

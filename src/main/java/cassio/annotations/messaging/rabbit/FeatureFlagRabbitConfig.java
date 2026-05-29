@@ -26,7 +26,7 @@ import tools.jackson.databind.json.JsonMapper;
 @ConditionalOnProperty(prefix = "spring.rabbitmq", name = "host")
 public class FeatureFlagRabbitConfig {
 
-    @Value("${feature-flag.rabbit.queue:feature-flags.events}")
+    @Value("${feature-flag.rabbit.queue:flag.events}")
     private String queueName;
 
     @Bean
