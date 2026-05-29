@@ -31,7 +31,7 @@ public class FeatureFlagAspect {
     }
 
     private Object checkAndProceed(ProceedingJoinPoint pjp, FeatureFlag featureFlag) throws Throwable {
-        String flagName = featureFlag.value();
+        String flagName = featureFlag.key().isEmpty() ? featureFlag.value() : featureFlag.key();
         boolean enabled = cacheService.isEnabled(flagName, featureFlag.enabledByDefault());
 
         if (!enabled) {
