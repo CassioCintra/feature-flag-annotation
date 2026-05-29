@@ -24,7 +24,7 @@ public class FeatureFlagActiveMqConsumer {
         this.objectMapper = objectMapper;
     }
 
-    @JmsListener(destination = "${feature-flag.artemis.queue:feature-flags.events}")
+    @JmsListener(destination = "${feature-flag.artemis.queue:flag.events}")
     public void consume(Message message) throws Exception {
         if (message instanceof TextMessage textMessage) {
             FeatureFlagEvent event = objectMapper.readValue(

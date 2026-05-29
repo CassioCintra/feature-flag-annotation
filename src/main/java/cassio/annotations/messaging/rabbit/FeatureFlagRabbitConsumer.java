@@ -19,7 +19,7 @@ public class FeatureFlagRabbitConsumer {
         this.processor = processor;
     }
 
-    @RabbitListener(queues = "${feature-flag.rabbit.queue:feature-flags.events}")
+    @RabbitListener(queues = "${feature-flag.rabbit.queue:flag.events}")
     public void consume(FeatureFlagEvent event) {
         processor.process(event);
     }

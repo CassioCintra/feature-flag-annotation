@@ -62,10 +62,11 @@ public class FeatureFlagFieldInjectorAspect {
             if (annotation == null || !field.getType().equals(Boolean.class)) return;
 
             field.setAccessible(true);
-            boolean value = cacheService.isEnabled(annotation.value(), annotation.enabledByDefault());
+            String flagName = annotation.key().isEmpty() ? annotation.value() : annotation.key();
+            boolean value = cacheService.isEnabled(flagName, annotation.enabledByDefault());
             ReflectionUtils.setField(field, target, value);
 
-            log.debug("Field '{}' updated with flag '{}' = {}", field.getName(), annotation.value(), value);
+            log.debug("Field '{}' updated with flag '{}' = {}", field.getName(), flagName, value);
         });
 
         return pjp.proceed();

@@ -8,6 +8,8 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import java.util.Map;
+
 import static org.mockito.Mockito.verify;
 
 @ExtendWith(MockitoExtension.class)
@@ -22,7 +24,7 @@ class FeatureFlagKafkaConsumerTest {
     @Test
     void shouldDelegateToProcessor() {
         FeatureFlagEvent event = new FeatureFlagEvent(
-                "my-flag", "checkout-service", "dev", true, FeatureFlagEvent.Action.UPDATED);
+                "my-flag", "checkout-service", Map.of("dev", true), true, FeatureFlagEvent.Action.UPDATED);
 
         consumer.consume(event);
 

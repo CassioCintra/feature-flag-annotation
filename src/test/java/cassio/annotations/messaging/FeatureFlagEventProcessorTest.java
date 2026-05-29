@@ -6,6 +6,8 @@ import cassio.annotations.model.FeatureFlagEvent;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.Map;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 class FeatureFlagEventProcessorTest {
@@ -13,97 +15,162 @@ class FeatureFlagEventProcessorTest {
     private FeatureFlagCacheService cacheService;
     private FeatureFlagEventProcessor processor;
 
-    private static final String NEW_CHECKOUT = "new-checkout";
+    private static final String FLAG = "new-checkout";
     private static final String CHECKOUT_SERVICE = "checkout-service";
     private static final String OTHER_SERVICE = "other-service";
-    private static final String DEVELOPMENT = "dev";
-    private static final String PRODUCTION = "prod";
-    
+    private static final String DEV = "dev";
+    private static final String PROD = "prod";
+
     @BeforeEach
     void setUp() {
         FeatureFlagProperties properties = new FeatureFlagProperties();
         properties.setServiceName(CHECKOUT_SERVICE);
-        properties.setEnvironment(DEVELOPMENT);
+        properties.setEnvironment(DEV);
 
         cacheService = new FeatureFlagCacheService(properties);
         processor = new FeatureFlagEventProcessor(properties, cacheService);
     }
 
-    @Test
-    void create_shouldAddFlagToCacheAsDisabled() {
-        processor.process(event(CHECKOUT_SERVICE, null, null, FeatureFlagEvent.Action.CREATED));
+    // --- CREATED ---
 
-        assertThat(cacheService.isEnabled(NEW_CHECKOUT, true)).isFalse();
+    @Test
+    void created_currentEnvEnabled_shouldAddToCacheAsTrue() {
+        processor.process(event(CHECKOUT_SERVICE, Map.of(DEV, true), true, FeatureFlagEvent.Action.CREATED));
+
+        assertThat(cacheService.isEnabled(FLAG, false)).isTrue();
     }
 
     @Test
-    void create_differentService_shouldNotAddToCache() {
-        processor.process(event(OTHER_SERVICE, null, null, FeatureFlagEvent.Action.CREATED));
+    void created_currentEnvDisabled_shouldAddToCacheAsFalse() {
+        processor.process(event(CHECKOUT_SERVICE, Map.of(DEV, false), true, FeatureFlagEvent.Action.CREATED));
+
+        assertThat(cacheService.isEnabled(FLAG, true)).isFalse();
+    }
+
+    @Test
+    void created_globallyDisabled_shouldAddToCacheAsFalseEvenWhenEnvEnabled() {
+        processor.process(event(CHECKOUT_SERVICE, Map.of(DEV, true), false, FeatureFlagEvent.Action.CREATED));
+
+        assertThat(cacheService.isEnabled(FLAG, true)).isFalse();
+    }
+
+    @Test
+    void created_currentEnvNotInMap_shouldNotAddToCache() {
+        processor.process(event(CHECKOUT_SERVICE, Map.of(PROD, true), true, FeatureFlagEvent.Action.CREATED));
 
         assertThat(cacheService.size()).isZero();
     }
 
     @Test
-    void create_shouldNotFilterByEnvironment() {
-        processor.process(event(CHECKOUT_SERVICE, PRODUCTION, null, FeatureFlagEvent.Action.CREATED));
-
-        assertThat(cacheService.isEnabled(NEW_CHECKOUT, true)).isFalse();
-    }
-
-    @Test
-    void update_shouldUpdateCacheWithNewValue() {
-        processor.process(event(CHECKOUT_SERVICE, DEVELOPMENT, true, FeatureFlagEvent.Action.UPDATED));
-
-        assertThat(cacheService.isEnabled(NEW_CHECKOUT, false)).isTrue();
-    }
-
-    @Test
-    void update_differentService_shouldNotUpdateCache() {
-        cacheService.put(NEW_CHECKOUT, false);
-
-        processor.process(event(OTHER_SERVICE, DEVELOPMENT, true, FeatureFlagEvent.Action.UPDATED));
-
-        assertThat(cacheService.isEnabled(NEW_CHECKOUT, true)).isFalse();
-    }
-
-    @Test
-    void update_differentEnvironment_shouldNotUpdateCache() {
-        cacheService.put(NEW_CHECKOUT, false);
-
-        processor.process(event(CHECKOUT_SERVICE, PRODUCTION, true, FeatureFlagEvent.Action.UPDATED));
-
-        assertThat(cacheService.isEnabled(NEW_CHECKOUT, true)).isFalse();
-    }
-
-    @Test
-    void delete_shouldRemoveFlagFromCache() {
-        cacheService.put(NEW_CHECKOUT, true);
-
-        processor.process(event(CHECKOUT_SERVICE, null, null, FeatureFlagEvent.Action.DELETED));
+    void created_nullEnvironments_shouldNotAddToCache() {
+        processor.process(event(CHECKOUT_SERVICE, null, true, FeatureFlagEvent.Action.CREATED));
 
         assertThat(cacheService.size()).isZero();
     }
 
     @Test
-    void delete_shouldRemoveRegardlessOfService() {
-        cacheService.put(NEW_CHECKOUT, true);
+    void created_differentService_shouldNotAddToCache() {
+        processor.process(event(OTHER_SERVICE, Map.of(DEV, true), true, FeatureFlagEvent.Action.CREATED));
 
-        processor.process(event(OTHER_SERVICE, null, null, FeatureFlagEvent.Action.DELETED));
+        assertThat(cacheService.size()).isZero();
+    }
+
+    // --- UPDATED ---
+
+    @Test
+    void updated_currentEnvEnabled_shouldUpdateCache() {
+        processor.process(event(CHECKOUT_SERVICE, Map.of(DEV, true), true, FeatureFlagEvent.Action.UPDATED));
+
+        assertThat(cacheService.isEnabled(FLAG, false)).isTrue();
+    }
+
+    @Test
+    void updated_differentService_shouldNotUpdateCache() {
+        cacheService.put(FLAG, false);
+
+        processor.process(event(OTHER_SERVICE, Map.of(DEV, true), true, FeatureFlagEvent.Action.UPDATED));
+
+        assertThat(cacheService.isEnabled(FLAG, true)).isFalse();
+    }
+
+    @Test
+    void updated_currentEnvNotInMap_shouldNotUpdateCache() {
+        cacheService.put(FLAG, false);
+
+        processor.process(event(CHECKOUT_SERVICE, Map.of(PROD, true), true, FeatureFlagEvent.Action.UPDATED));
+
+        assertThat(cacheService.isEnabled(FLAG, true)).isFalse();
+    }
+
+    // --- TOGGLED ---
+
+    @Test
+    void toggled_currentEnvEnabled_shouldUpdateCacheAsTrue() {
+        cacheService.put(FLAG, false);
+
+        processor.process(event(CHECKOUT_SERVICE, Map.of(DEV, true), true, FeatureFlagEvent.Action.TOGGLED));
+
+        assertThat(cacheService.isEnabled(FLAG, false)).isTrue();
+    }
+
+    @Test
+    void toggled_globallyDisabled_shouldUpdateCacheAsFalseEvenWhenEnvEnabled() {
+        cacheService.put(FLAG, true);
+
+        processor.process(event(CHECKOUT_SERVICE, Map.of(DEV, true), false, FeatureFlagEvent.Action.TOGGLED));
+
+        assertThat(cacheService.isEnabled(FLAG, true)).isFalse();
+    }
+
+    @Test
+    void toggled_differentService_shouldNotUpdateCache() {
+        cacheService.put(FLAG, false);
+
+        processor.process(event(OTHER_SERVICE, Map.of(DEV, true), true, FeatureFlagEvent.Action.TOGGLED));
+
+        assertThat(cacheService.isEnabled(FLAG, true)).isFalse();
+    }
+
+    @Test
+    void toggled_currentEnvNotInMap_shouldNotUpdateCache() {
+        cacheService.put(FLAG, false);
+
+        processor.process(event(CHECKOUT_SERVICE, Map.of(PROD, true), true, FeatureFlagEvent.Action.TOGGLED));
+
+        assertThat(cacheService.isEnabled(FLAG, true)).isFalse();
+    }
+
+    // --- DELETED ---
+
+    @Test
+    void deleted_shouldRemoveFlagFromCache() {
+        cacheService.put(FLAG, true);
+
+        processor.process(event(CHECKOUT_SERVICE, null, false, FeatureFlagEvent.Action.DELETED));
 
         assertThat(cacheService.size()).isZero();
     }
 
     @Test
-    void delete_flagNotInCache_shouldNotFail() {
-        assertThat(cacheService.size()).isZero();
+    void deleted_shouldRemoveRegardlessOfService() {
+        cacheService.put(FLAG, true);
 
-        processor.process(event(CHECKOUT_SERVICE, null, null, FeatureFlagEvent.Action.DELETED));
+        processor.process(event(OTHER_SERVICE, null, false, FeatureFlagEvent.Action.DELETED));
 
         assertThat(cacheService.size()).isZero();
     }
 
-    private FeatureFlagEvent event(String service, String env,
-                                   Boolean enabled, FeatureFlagEvent.Action action) {
-        return new FeatureFlagEvent(NEW_CHECKOUT, service, env, enabled, action);
+    @Test
+    void deleted_flagNotInCache_shouldNotFail() {
+        processor.process(event(CHECKOUT_SERVICE, null, false, FeatureFlagEvent.Action.DELETED));
+
+        assertThat(cacheService.size()).isZero();
+    }
+
+    // --- helper ---
+
+    private FeatureFlagEvent event(String service, Map<String, Boolean> environments,
+                                   boolean enabled, FeatureFlagEvent.Action action) {
+        return new FeatureFlagEvent(FLAG, service, environments, enabled, action);
     }
 }
