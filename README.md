@@ -2,13 +2,13 @@
 
 Shared feature flag library for Spring Boot services with:
 
-- **HTTP Bootstrap** — fetches all service flags on application startup
-- **Strict Mode** — opt-in: blocks startup if any annotated flag is not found on the server
-- **Multi-broker Messaging** — keeps the cache up to date in real time via Kafka, RabbitMQ, or ActiveMQ Artemis
+- **Consul KV** — loads the service flags on startup and follows every change with Consul blocking queries
+- **Per-environment isolation** — each instance reads only `feature-flags/{service}/{environment}/`
+- **Strict Mode** — opt-in: blocks startup if any annotated flag is not found in Consul
 - **Caffeine Local Cache** — zero-latency lookups, no time-based expiration
-- **Layered Fallback** — never brings down the application if the flag microservice is unavailable
+- **Layered Fallback** — never brings down the application if Consul is unavailable
 - **Field Injection** — inject the live flag value into a `Boolean` field for in-method conditional logic
-- **Optional OAuth2** — automatically attaches a Bearer token to the HTTP bootstrap when `OAuth2AuthorizedClientManager` is present
+- **Consul ACL login** — exchanges an OAuth2 Client Credentials JWT for a Consul token and renews it automatically
 
 ---
 
@@ -18,23 +18,20 @@ Shared feature flag library for Spring Boot services with:
 Application starts
       │
       ▼
-FeatureFlagScanner → scans all Spring beans for @FeatureFlag annotations (used by strict mode)
+GET /v1/kv/feature-flags/{service}/{environment}/?recurse
       │
-      ▼
-GET /flags?service={name}&env={env}
-      │
-      ├── Success → populates Caffeine cache with all flags for this service and environment
+      ├── Success → replaces the Caffeine cache with the flags found
       └── Failure → application starts with configured default values (startup is not blocked)
       │
       ▼
-[strict=true] enforces that every annotated flag exists in the server response
+[strict=true] enforces that every annotated flag exists in Consul
       │                → throws IllegalStateException and blocks startup if any flag is missing
       ▼
-Messaging consumer listens: flag.events (Kafka / RabbitMQ / Artemis)
+Virtual thread watches the same prefix (Consul blocking query)
       │
-      ├── CREATED / UPDATED / TOGGLED → filters by serviceName + environments map,
-      │                                  caches enabled AND environments[currentEnv]
-      └── DELETED  → removes from cache regardless of environment
+      ├── Flag changed or added → cache updated
+      ├── Flag removed          → evicted from the cache, falls back to the defaults
+      └── Consul unavailable    → retries every 5s, the cache keeps the last known values
       │
       ▼
 @FeatureFlag intercepts the call
@@ -52,13 +49,31 @@ Messaging consumer listens: flag.events (Kafka / RabbitMQ / Artemis)
 
 ---
 
+## Consul layout
+
+The flags are written by `ms-feature-flags-management`, the source of truth. Each key holds
+the effective value of one flag in one environment:
+
+```
+feature-flags/
+└── checkout-service/
+    ├── dev/
+    │   └── new-checkout   → {"enabled": true}
+    └── prod/
+        └── new-checkout   → {"enabled": false}
+```
+
+Keys with any other value are ignored and logged as a warning.
+
+---
+
 ## Installation
 
 ```xml
 <dependency>
     <groupId>io.github.cassiocintra</groupId>
     <artifactId>feature-flag</artifactId>
-    <version>1.0.0</version>
+    <version>2.0.0</version>
 </dependency>
 ```
 
@@ -66,70 +81,29 @@ Messaging consumer listens: flag.events (Kafka / RabbitMQ / Artemis)
 
 ## Configuration
 
-### Minimal (application.yaml)
-
 ```yaml
 feature-flag:
-  service-name: checkout-service
-  environment: ${spring.profiles.active:dev}
-  flag-service-url: http://ms-feature-flags:8081/feature-flag/v1
-
-# Defaults — used ONLY if the HTTP bootstrap fails
-# Take precedence over @FeatureFlag(enabledByDefault)
-  defaults:
+  service-name: checkout-service                 # required
+  environment: ${spring.profiles.active:dev}     # required
+  strict: false                                  # true: blocks startup if any annotated flag is missing
+  consul:
+    url: http://consul:8500                      # enables the Consul sync
+    auth-method: ms-auth                         # default: ms-auth
+    client-registration-id: feature-flag         # default: feature-flag
+  defaults:                                      # used while a flag is not in Consul
     new-checkout: false
     pix-payment: false
 ```
 
-### All options
-
-```yaml
-feature-flag:
-  service-name: checkout-service                              # required
-  environment: ${spring.profiles.active:dev}                 # required
-  flag-service-url: http://ms-feature-flags:8081/feature-flag/v1  # enables bootstrap
-  strict: false                                              # true: blocks startup if any annotated flag is missing
-  defaults:
-    new-checkout: false
-```
-
-### Messaging broker (choose one)
-
-**Kafka:**
-```yaml
-spring:
-  kafka:
-    bootstrap-servers: localhost:9092
-
-feature-flag:
-  kafka:
-    topic: flag.events                 # default: flag.events
-    group-id: order-service-consumer   # default: feature-flag-consumer
-```
-
-**RabbitMQ:**
-```yaml
-spring:
-  rabbitmq:
-    host: localhost
-
-feature-flag:
-  rabbit:
-    queue: flag.events          # default: flag.events
-```
-
-**ActiveMQ Artemis:**
-```yaml
-spring:
-  artemis:
-    broker-url: tcp://localhost:61616
-
-feature-flag:
-  artemis:
-    queue: flag.events          # default: flag.events
-```
-
-> Each broker requires its own starter — see [Messaging support](#messaging-support) below.
+> [!WARNING]
+> **Every default must be `true` or `false`.** A default left empty (`new-checkout:`) or with any
+> other value (`new-checkout: yes`) makes the flag **disabled**, even if the annotation says
+> `enabledByDefault = true`. The application still starts, and a warning is logged for each
+> such flag:
+>
+> ```
+> Default for flag 'new-checkout' is '', not true or false. The flag will be treated as disabled.
+> ```
 
 ---
 
@@ -144,7 +118,7 @@ public ResponseEntity<Order> checkout(OrderRequest request) {
     // executes only if "new-checkout" is true in the current environment
 }
 
-// With default value if bootstrap fails and no properties default is defined
+// Default used while the flag is not in Consul and no feature-flag.defaults entry exists
 @FeatureFlag(value = "report-v2", enabledByDefault = true)
 public byte[] generateReport() { ... }
 
@@ -203,15 +177,16 @@ public class PaymentService {
 
 ## Strict mode
 
-When `feature-flag.strict=true`, the library compares every flag key found by scanning `@FeatureFlag` annotations against the flags returned by the server for the current service and environment. If any annotated flag is missing, startup is blocked:
+When `feature-flag.strict=true`, the library compares every flag key found by scanning `@FeatureFlag` annotations against the flags found in Consul for the current service and environment. If any annotated flag is missing, startup is blocked:
 
 ```
 IllegalStateException: Strict mode is active. The following feature flags are annotated
-in the code but not found in the flag server for service 'checkout-api' / environment
+in the code but not found in Consul for service 'checkout-api' / environment
 'production': [payments_v3]. Register them before starting this application.
 ```
 
 Without strict mode (default), a missing flag falls back to `feature-flag.defaults.*` or `@FeatureFlag(enabledByDefault)`, and a warning is logged.
+If Consul is unavailable on startup, strict mode is not checked.
 
 ---
 
@@ -232,105 +207,25 @@ public class GlobalExceptionHandler {
 
 ---
 
-## Messaging support
+## Consul ACL login
 
-Each broker is optional — only add the starter for the broker your service uses.
-The library detects which one is configured and activates the correct consumer automatically.
+With ACL enabled, the library logs in through a Consul JWT auth method (`/v1/acl/login`)
+using an access token from your OAuth2 provider. The token needs the `flags:read` scope
+and the `consul` audience. When Consul rejects the token (it lasts up to 15 minutes),
+the library logs in again.
 
-| Broker | Starter | Activation property |
-|---|---|---|
-| Kafka | `spring-boot-starter-kafka` (via `spring-kafka`) | `spring.kafka.bootstrap-servers` |
-| RabbitMQ | `spring-boot-starter-amqp` | `spring.rabbitmq.host` |
-| ActiveMQ Artemis | `spring-boot-starter-artemis` | `spring.artemis.broker-url` |
-
-> **Note:** ActiveMQ Classic (`spring-boot-starter-activemq`) is not supported due to known security vulnerabilities (CVE-2026-33227, CVE-2026-34197). Use ActiveMQ Artemis instead.
-
-### Kafka dependency
-
-```xml
-<dependency>
-    <groupId>org.springframework.kafka</groupId>
-    <artifactId>spring-kafka</artifactId>
-</dependency>
-```
-
-### RabbitMQ dependency
-
-```xml
-<dependency>
-    <groupId>org.springframework.boot</groupId>
-    <artifactId>spring-boot-starter-amqp</artifactId>
-</dependency>
-```
-
-### ActiveMQ Artemis dependency
-
-```xml
-<dependency>
-    <groupId>org.springframework.boot</groupId>
-    <artifactId>spring-boot-starter-artemis</artifactId>
-</dependency>
-```
-
----
-
-## Messaging events
-
-All mutations publish to the single topic `flag.events`. The `action` field distinguishes the event type.
-Each consumer filters by `serviceName` and checks if its environment is present in `environments`.
-
-The effective cached state is: `enabled AND environments[currentEnv]`.
-
-**CREATED / UPDATED / TOGGLED:**
-```json
-{
-  "flagName":    "new-checkout",
-  "serviceName": "checkout-service",
-  "enabled":     true,
-  "environments": {
-    "dev":     true,
-    "staging": true,
-    "prod":    false
-  },
-  "action": "CREATED"
-}
-```
-
-| `action`  | When |
-|-----------|------|
-| `CREATED` | Flag created |
-| `UPDATED` | Metadata updated (type, rollout, tags…) |
-| `TOGGLED` | `enabled` or per-environment state changed |
-| `DELETED` | Flag removed — evicted from cache regardless of environment |
-
-**DELETED:**
-```json
-{
-  "flagName":    "new-checkout",
-  "serviceName": "checkout-service",
-  "action":      "DELETED"
-}
-```
-
----
-
-## OAuth2 support (optional)
-
-If the flag microservice requires JWT authentication, the library automatically attaches
-a Bearer token using Spring's `OAuth2AuthorizedClientManager` — no extra configuration
-in the library is needed.
-
-### How to enable
+Without an `OAuth2AuthorizedClientManager` bean, Consul is called without a token.
 
 **1. Add the dependency:**
 ```xml
 <dependency>
     <groupId>org.springframework.boot</groupId>
-    <artifactId>spring-boot-starter-oauth2-client</artifactId>
+    <artifactId>spring-boot-starter-security-oauth2-client</artifactId>
 </dependency>
 ```
 
-**2. Declare an `OAuth2AuthorizedClientManager` bean:**
+**2. Declare an `OAuth2AuthorizedClientManager` bean.** The flags are read on a background
+thread, outside any HTTP request, so use `AuthorizedClientServiceOAuth2AuthorizedClientManager`:
 ```java
 @Configuration
 public class OAuth2Config {
@@ -338,75 +233,72 @@ public class OAuth2Config {
     @Bean
     public OAuth2AuthorizedClientManager authorizedClientManager(
             ClientRegistrationRepository clientRegistrationRepository,
-            OAuth2AuthorizedClientRepository authorizedClientRepository) {
+            OAuth2AuthorizedClientService authorizedClientService) {
 
-        OAuth2AuthorizedClientProvider provider =
-                OAuth2AuthorizedClientProviderBuilder.builder()
-                        .clientCredentials()
-                        .build();
+        var provider = OAuth2AuthorizedClientProviderBuilder.builder()
+                .clientCredentials()
+                .build();
 
-        DefaultOAuth2AuthorizedClientManager manager =
-                new DefaultOAuth2AuthorizedClientManager(
-                        clientRegistrationRepository, authorizedClientRepository);
+        var manager = new AuthorizedClientServiceOAuth2AuthorizedClientManager(
+                clientRegistrationRepository, authorizedClientService);
         manager.setAuthorizedClientProvider(provider);
         return manager;
     }
 }
 ```
 
-**3. Configure your OAuth2 client:**
+**3. Configure the client registration** (its id must match `feature-flag.consul.client-registration-id`):
 ```yaml
 spring:
   security:
     oauth2:
       client:
         registration:
-          feature-flags:
-            client-id: my-service
+          feature-flag:
+            client-id: checkout-service
             client-secret: ${CLIENT_SECRET}
             authorization-grant-type: client_credentials
-            scope: openid
+            scope: flags:read
+            provider: ms-auth
         provider:
-          feature-flags:
-            issuer-uri: http://keycloak-host/realms/my-realm
+          ms-auth:
+            issuer-uri: http://ms-auth:9000
 ```
-
-When the `OAuth2AuthorizedClientManager` bean is present, the library uses
-`OAuth2ClientHttpRequestInterceptor` to fetch, cache, and renew the token automatically.
 
 ---
 
 ## Fallback hierarchy
 
-When a flag is not in the cache (bootstrap failed or messaging event not yet received):
+When a flag is not in the cache (Consul unavailable on startup, or no key for the flag):
 
 ```
 1. feature-flag.defaults.*        ← application.yaml of the consumer service
 2. @FeatureFlag(enabledByDefault) ← value defined on the annotation (default: false)
 ```
 
-The cache never expires by time — it relies on messaging events to stay up to date.
-Flags removed via `DELETED` are evicted from the cache immediately.
+The cache never expires by time. It is replaced on every change under the service prefix in Consul.
 
 ---
 
 ## Bean behavior (Autoconfigure)
 
-All beans are registered conditionally — no errors if a broker or HTTP endpoint is absent:
-
 | Bean | Condition |
 |---|---|
 | `FeatureFlagCacheService` | Always active |
-| `FeatureFlagEventProcessor` | Always active |
 | `FeatureFlagAspect` | Always active |
 | `FeatureFlagFieldInjectorAspect` | Always active |
 | `FeatureFlagScanner` | Always active |
-| `FeatureFlagBootstrap` | Requires `feature-flag.flag-service-url` |
-| `featureFlagRestClient` (no auth) | Requires `feature-flag.flag-service-url` + no `OAuth2AuthorizedClientManager` in context |
-| `featureFlagRestClient` (OAuth2) | Requires `feature-flag.flag-service-url` + `spring-boot-starter-oauth2-client` + `OAuth2AuthorizedClientManager` bean |
-| `FeatureFlagKafkaConsumer` | Requires `spring-kafka` on classpath + `spring.kafka.bootstrap-servers` |
-| `FeatureFlagRabbitConsumer` | Requires `spring-amqp` on classpath + `spring.rabbitmq.host` |
-| `FeatureFlagActiveMqConsumer` | Requires `spring-boot-starter-artemis` on classpath + `spring.artemis.broker-url` |
+| `ConsulFlagSync` | Requires `feature-flag.consul.url` |
+| `ConsulJwtSupplier` | Requires `feature-flag.consul.url` + `spring-boot-starter-security-oauth2-client` + `OAuth2AuthorizedClientManager` bean |
+
+---
+
+## Migrating from 1.x
+
+- Kafka, RabbitMQ and ActiveMQ Artemis consumers were removed. Remove `feature-flag.kafka.*`, `feature-flag.rabbit.*` and `feature-flag.artemis.*`.
+- The HTTP bootstrap was removed. Replace `feature-flag.flag-service-url` with `feature-flag.consul.url`.
+- An empty or invalid entry in `feature-flag.defaults` now disables the flag (see the warning above).
+- 1.x shipped a broken auto-configuration registration; 2.0.0 fixes it.
 
 ---
 
@@ -422,32 +314,19 @@ feature-flag/
         │   ├── FeatureFlagAspect.java               ← intercepts methods via AOP, blocks if disabled
         │   └── FeatureFlagFieldInjectorAspect.java  ← updates @FeatureFlag Boolean fields before each method
         ├── bootstrap/
-        │   ├── FeatureFlagBootstrap.java            ← scan → load flags on startup
-        │   ├── FeatureFlagScanner.java              ← scans Spring beans for @FeatureFlag annotations
-        │   └── FeatureFlagServerResponse.java       ← DTO for GET /flags response
+        │   └── FeatureFlagScanner.java              ← scans Spring beans for @FeatureFlag annotations
         ├── cache/
-        │   └── FeatureFlagCacheService.java         ← Caffeine cache, source of truth
+        │   └── FeatureFlagCacheService.java         ← Caffeine cache
         ├── config/
         │   ├── FeatureFlagAutoConfig.java           ← registers core beans
-        │   ├── FeatureFlagOAuth2Config.java         ← OAuth2 RestClient (optional)
+        │   ├── FeatureFlagOAuth2Config.java         ← JWT for the Consul login (optional)
         │   └── FeatureFlagProperties.java           ← reads application.yaml
+        ├── consul/
+        │   ├── ConsulClient.java                    ← Consul KV reads and ACL login
+        │   ├── ConsulFlagSync.java                  ← initial load, strict mode and watch
+        │   └── ConsulJwtSupplier.java               ← source of the JWT used to log in
         ├── exception/
         │   └── FeatureDisabledException.java        ← thrown when flag is disabled
-        ├── messaging/
-        │   ├── FeatureFlagEventProcessor.java       ← shared event processing logic
-        │   ├── activemq/
-        │   │   ├── FeatureFlagActiveMqConfig.java   ← Artemis config (optional)
-        │   │   └── FeatureFlagActiveMqConsumer.java ← Artemis JMS listener
-        │   ├── kafka/
-        │   │   ├── FeatureFlagKafkaConfig.java      ← Kafka config (optional)
-        │   │   ├── FeatureFlagKafkaConsumer.java    ← Kafka listener
-        │   │   └── FeatureFlagKafkaProperties.java  ← topic + group-id (configurable)
-        │   └── rabbit/
-        │       ├── FeatureFlagRabbitConfig.java     ← RabbitMQ config (optional)
-        │       └── FeatureFlagRabbitConsumer.java   ← RabbitMQ listener
-        ├── model/
-        │   ├── FeatureFlagEvent.java                ← messaging event model
-        │   └── FlagType.java                        ← enum: BOOLEAN, ROLLOUT, EXPERIMENT
-        └── utils/
-            └── JsonUtils.java                       ← Jackson serialization helper
+        └── model/
+            └── FlagType.java                        ← enum: BOOLEAN, ROLLOUT, EXPERIMENT
 ```

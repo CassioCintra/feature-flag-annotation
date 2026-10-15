@@ -11,16 +11,29 @@ import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.List;
 
+/**
+ * Finds the {@link FeatureFlag} annotations on the beans of the application context.
+ */
 public class FeatureFlagScanner {
 
     private static final Logger log = LoggerFactory.getLogger(FeatureFlagScanner.class);
 
     private final ApplicationContext ctx;
 
+    /**
+     * Creates the scanner.
+     *
+     * @param ctx application context whose beans are scanned
+     */
     public FeatureFlagScanner(ApplicationContext ctx) {
         this.ctx = ctx;
     }
 
+    /**
+     * Collects the annotations on the classes, methods and fields of every bean.
+     *
+     * @return the annotations found
+     */
     public List<FeatureFlag> scan() {
         List<FeatureFlag> found = new ArrayList<>();
         for (String beanName : ctx.getBeanDefinitionNames()) {

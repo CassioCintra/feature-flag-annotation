@@ -1,1 +1,1 @@
-config.cassio.annotations.FeatureFlagAutoConfig
+cassio.annotations.config.FeatureFlagAutoConfig

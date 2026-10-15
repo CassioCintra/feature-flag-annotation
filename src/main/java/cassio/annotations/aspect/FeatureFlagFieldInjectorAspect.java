@@ -16,7 +16,7 @@ import org.springframework.util.ReflectionUtils;
  *
  * <p>This aspect complements {@link FeatureFlagAspect}, which blocks or allows
  * method execution. This one keeps {@code Boolean} fields up to date with the
- * live cache state — updated by Kafka events — so that in-method conditional
+ * live cache state — kept in sync with Consul — so that in-method conditional
  * logic always reflects the current flag value.
  *
  * <p>Runs with {@code @Order(1)} to guarantee fields are updated before
@@ -48,10 +48,22 @@ public class FeatureFlagFieldInjectorAspect {
 
     private final FeatureFlagCacheService cacheService;
 
+    /**
+     * Creates the aspect.
+     *
+     * @param cacheService source of the flag states
+     */
     public FeatureFlagFieldInjectorAspect(FeatureFlagCacheService cacheService) {
         this.cacheService = cacheService;
     }
 
+    /**
+     * Updates the annotated {@code Boolean} fields of the target before the call proceeds.
+     *
+     * @param pjp the intercepted call
+     * @return the method result
+     * @throws Throwable the method exception
+     */
     @Around("within(@org.springframework.stereotype.Service *)" +
             " || within(@org.springframework.stereotype.Component *)")
     public Object injectFlagFields(ProceedingJoinPoint pjp) throws Throwable {

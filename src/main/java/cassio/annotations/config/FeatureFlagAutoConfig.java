@@ -2,19 +2,22 @@ package cassio.annotations.config;
 
 import cassio.annotations.aspect.FeatureFlagAspect;
 import cassio.annotations.aspect.FeatureFlagFieldInjectorAspect;
-import cassio.annotations.bootstrap.FeatureFlagBootstrap;
 import cassio.annotations.bootstrap.FeatureFlagScanner;
 import cassio.annotations.cache.FeatureFlagCacheService;
-import cassio.annotations.messaging.FeatureFlagEventProcessor;
+import cassio.annotations.consul.ConsulClient;
+import cassio.annotations.consul.ConsulFlagSync;
+import cassio.annotations.consul.ConsulJwtSupplier;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.EnableAspectJAutoProxy;
-import org.springframework.web.client.RestClient;
+import org.springframework.context.annotation.Import;
+
+import java.time.Duration;
 
 /**
  * Auto-configuration for the feature flag library.
@@ -25,21 +28,30 @@ import org.springframework.web.client.RestClient;
  * <p>Each bean is conditionally registered:
  * <ul>
  *   <li>{@link FeatureFlagCacheService} — always active</li>
- *   <li>{@link FeatureFlagEventProcessor} — always active</li>
  *   <li>{@link FeatureFlagAspect} — always active</li>
  *   <li>{@link FeatureFlagFieldInjectorAspect} — always active</li>
- *   <li>{@link FeatureFlagBootstrap} — requires {@code feature-flag.flag-service-url}</li>
- *   <li>Kafka consumer — see {@code FeatureFlagKafkaConfig} (requires spring-kafka + bootstrap-servers)</li>
- *   <li>RabbitMQ consumer — see {@code FeatureFlagRabbitConfig} (requires spring-amqp + rabbitmq.host)</li>
- *   <li>ActiveMQ consumer — see {@code FeatureFlagActiveMqConfig} (requires spring-jms + activemq.broker-url)</li>
- *   <li>OAuth2 RestClient — see {@code FeatureFlagOAuth2Config} (requires oauth2-client + AuthorizedClientManager bean)</li>
+ *   <li>{@link ConsulFlagSync} — requires {@code feature-flag.consul.url}</li>
+ *   <li>Consul login JWT — see {@code FeatureFlagOAuth2Config} (requires oauth2-client + AuthorizedClientManager bean)</li>
  * </ul>
  */
 @AutoConfiguration
 @EnableAspectJAutoProxy
 @EnableConfigurationProperties(FeatureFlagProperties.class)
+@Import(FeatureFlagOAuth2Config.class)
 public class FeatureFlagAutoConfig {
 
+    /** Created by Spring Boot auto-configuration. */
+    public FeatureFlagAutoConfig() {}
+
+    private static final Duration CONSUL_WAIT = Duration.ofMinutes(5);
+    private static final Duration CONSUL_RETRY_DELAY = Duration.ofSeconds(5);
+
+    /**
+     * Flag cache.
+     *
+     * @param properties library configuration
+     * @return the cache
+     */
     @Bean
     @ConditionalOnMissingBean
     public FeatureFlagCacheService featureFlagCacheService(FeatureFlagProperties properties) {
@@ -47,27 +59,35 @@ public class FeatureFlagAutoConfig {
     }
 
     /**
-     * Shared event processor — delegates to all messaging consumers (Kafka, RabbitMQ, ActiveMQ).
+     * Aspect that blocks annotated methods and classes while their flag is disabled.
+     *
+     * @param cacheService flag cache
+     * @return the aspect
      */
-    @Bean
-    @ConditionalOnMissingBean
-    public FeatureFlagEventProcessor featureFlagEventProcessor(FeatureFlagProperties properties,
-                                                               FeatureFlagCacheService cacheService) {
-        return new FeatureFlagEventProcessor(properties, cacheService);
-    }
-
     @Bean
     @ConditionalOnMissingBean
     public FeatureFlagAspect featureFlagAspect(FeatureFlagCacheService cacheService) {
         return new FeatureFlagAspect(cacheService);
     }
 
+    /**
+     * Aspect that keeps annotated {@code Boolean} fields up to date.
+     *
+     * @param cacheService flag cache
+     * @return the aspect
+     */
     @Bean
     @ConditionalOnMissingBean
     public FeatureFlagFieldInjectorAspect featureFlagFieldInjectorAspect(FeatureFlagCacheService cacheService) {
         return new FeatureFlagFieldInjectorAspect(cacheService);
     }
 
+    /**
+     * Scanner of the annotated flags, used by strict mode.
+     *
+     * @param ctx application context whose beans are scanned
+     * @return the scanner
+     */
     @Bean
     @ConditionalOnMissingBean
     public FeatureFlagScanner featureFlagScanner(ApplicationContext ctx) {
@@ -75,29 +95,26 @@ public class FeatureFlagAutoConfig {
     }
 
     /**
-     * HTTP bootstrap — only registered if {@code feature-flag.flag-service-url} is configured.
+     * Consul sync, registered only when {@code feature-flag.consul.url} is set.
+     * Without a {@link ConsulJwtSupplier} bean, Consul is called without a token.
+     *
+     * @param properties         library configuration
+     * @param cacheService       flag cache
+     * @param featureFlagScanner finds the annotated flags checked by strict mode
+     * @param jwtSupplier        optional source of the JWT used to log in to Consul
+     * @return the Consul sync
      */
     @Bean
     @ConditionalOnMissingBean
-    @ConditionalOnProperty(prefix = "feature-flag", name = "flag-service-url")
-    public FeatureFlagBootstrap featureFlagBootstrap(FeatureFlagProperties properties,
-                                                     FeatureFlagCacheService cacheService,
-                                                     RestClient featureFlagRestClient,
-                                                     FeatureFlagScanner featureFlagScanner) {
-        return new FeatureFlagBootstrap(properties, cacheService, featureFlagRestClient, featureFlagScanner);
-    }
-
-    /**
-     * RestClient without authentication — used when OAuth2AuthorizedClientManager
-     * is not present in the context. See {@code FeatureFlagOAuth2Config} for the OAuth2 variant.
-     */
-    @Bean
-    @ConditionalOnProperty(prefix = "feature-flag", name = "flag-service-url")
-    @ConditionalOnMissingBean(name = "featureFlagRestClient")
-    @ConditionalOnMissingClass("org.springframework.security.oauth2.client.OAuth2AuthorizedClientManager")
-    public RestClient featureFlagRestClient(FeatureFlagProperties properties) {
-        return RestClient.builder()
-                .baseUrl(properties.getFlagServiceUrl())
-                .build();
+    @ConditionalOnProperty(prefix = "feature-flag.consul", name = "url")
+    public ConsulFlagSync consulFlagSync(FeatureFlagProperties properties,
+                                         FeatureFlagCacheService cacheService,
+                                         FeatureFlagScanner featureFlagScanner,
+                                         ObjectProvider<ConsulJwtSupplier> jwtSupplier) {
+        var consul = properties.getConsul();
+        var client = new ConsulClient(consul.getUrl(), consul.getAuthMethod(),
+                jwtSupplier.getIfAvailable(), CONSUL_WAIT.plusMinutes(1));
+        return new ConsulFlagSync(properties, cacheService, featureFlagScanner, client,
+                CONSUL_WAIT, CONSUL_RETRY_DELAY);
     }
 }
