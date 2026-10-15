@@ -37,8 +37,9 @@ import java.lang.annotation.Target;
  * feature-flag:
  *   service-name: checkout-service
  *   environment: ${spring.profiles.active:dev}
- *   flag-service-url: http://ms-feature-flags:8081/feature-flag/v1
- *   strict: true   # blocks startup if any annotated flag is missing from the server
+ *   consul:
+ *     url: http://consul:8500
+ *   strict: true   # blocks startup if any annotated flag is missing from Consul
  * </pre>
  */
 @Target({ElementType.FIELD, ElementType.METHOD, ElementType.TYPE})
@@ -46,36 +47,81 @@ import java.lang.annotation.Target;
 @Documented
 public @interface FeatureFlag {
 
-    /** Shorthand for {@link #key()} — {@code @FeatureFlag("foo")} kept for backward compatibility. */
+    /**
+     * Shorthand for {@link #key()} — {@code @FeatureFlag("foo")} kept for backward compatibility.
+     *
+     * @return the flag key
+     */
     String value() default "";
 
-    /** Named flag key. Takes precedence over {@link #value()} when set. */
+    /**
+     * Named flag key. Takes precedence over {@link #value()} when set.
+     *
+     * @return the flag key
+     */
     String key() default "";
 
+    /**
+     * Kind of flag.
+     *
+     * @return the flag type
+     */
     FlagType type() default FlagType.BOOLEAN;
 
-    /** Percentage of traffic that receives this flag (0–100). Relevant for ROLLOUT type. */
+    /**
+     * Percentage of traffic that receives this flag (0–100). Relevant for ROLLOUT type.
+     *
+     * @return the rollout percentage
+     */
     int rollout() default 100;
 
-    /** Environments where this flag applies, e.g. {@code {"production", "staging"}}. */
+    /**
+     * Environments where this flag applies, e.g. {@code {"production", "staging"}}.
+     *
+     * @return the environments
+     */
     String[] envs() default {};
 
+    /**
+     * Free-form labels used to group flags.
+     *
+     * @return the tags
+     */
     String[] tags() default {};
 
-    /** Overrides the global {@code feature-flag.service-name} for this specific flag. */
+    /**
+     * Overrides the global {@code feature-flag.service-name} for this specific flag.
+     *
+     * @return the service name
+     */
     String service() default "";
 
+    /**
+     * Team or person responsible for the flag.
+     *
+     * @return the owner
+     */
     String owner() default "";
 
-    /** ISO date after which this flag should be removed, e.g. {@code "2026-09-01"}. */
+    /**
+     * ISO date after which this flag should be removed, e.g. {@code "2026-09-01"}.
+     *
+     * @return the expiration date
+     */
     String expiresAt() default "";
 
     /**
-     * Default value used when the flag is absent from cache
-     * (bootstrap failed or flag not yet received via messaging).
+     * Default value used when the flag is absent from the cache (Consul unavailable or key not found),
+     * unless {@code feature-flag.defaults} has an entry for it.
+     *
+     * @return whether the flag is enabled by default
      */
     boolean enabledByDefault() default false;
 
-    /** Message included in the exception when the flag is disabled. */
+    /**
+     * Message included in the exception when the flag is disabled.
+     *
+     * @return the message
+     */
     String message() default "";
 }

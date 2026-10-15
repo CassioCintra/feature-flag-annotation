@@ -24,6 +24,9 @@ import org.springframework.security.oauth2.client.OAuth2AuthorizedClientManager;
 @ConditionalOnProperty(prefix = "feature-flag.consul", name = "url")
 public class FeatureFlagOAuth2Config {
 
+    /** Imported by {@link FeatureFlagAutoConfig}. */
+    public FeatureFlagOAuth2Config() {}
+
     /**
      * Creates the JWT supplier backed by the OAuth2 client registration.
      *

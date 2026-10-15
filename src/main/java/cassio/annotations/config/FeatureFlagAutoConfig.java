@@ -40,27 +40,54 @@ import java.time.Duration;
 @Import(FeatureFlagOAuth2Config.class)
 public class FeatureFlagAutoConfig {
 
+    /** Created by Spring Boot auto-configuration. */
+    public FeatureFlagAutoConfig() {}
+
     private static final Duration CONSUL_WAIT = Duration.ofMinutes(5);
     private static final Duration CONSUL_RETRY_DELAY = Duration.ofSeconds(5);
 
+    /**
+     * Flag cache.
+     *
+     * @param properties library configuration
+     * @return the cache
+     */
     @Bean
     @ConditionalOnMissingBean
     public FeatureFlagCacheService featureFlagCacheService(FeatureFlagProperties properties) {
         return new FeatureFlagCacheService(properties);
     }
 
+    /**
+     * Aspect that blocks annotated methods and classes while their flag is disabled.
+     *
+     * @param cacheService flag cache
+     * @return the aspect
+     */
     @Bean
     @ConditionalOnMissingBean
     public FeatureFlagAspect featureFlagAspect(FeatureFlagCacheService cacheService) {
         return new FeatureFlagAspect(cacheService);
     }
 
+    /**
+     * Aspect that keeps annotated {@code Boolean} fields up to date.
+     *
+     * @param cacheService flag cache
+     * @return the aspect
+     */
     @Bean
     @ConditionalOnMissingBean
     public FeatureFlagFieldInjectorAspect featureFlagFieldInjectorAspect(FeatureFlagCacheService cacheService) {
         return new FeatureFlagFieldInjectorAspect(cacheService);
     }
 
+    /**
+     * Scanner of the annotated flags, used by strict mode.
+     *
+     * @param ctx application context whose beans are scanned
+     * @return the scanner
+     */
     @Bean
     @ConditionalOnMissingBean
     public FeatureFlagScanner featureFlagScanner(ApplicationContext ctx) {

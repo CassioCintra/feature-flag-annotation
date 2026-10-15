@@ -22,19 +22,55 @@ import java.util.Map;
 @ConfigurationProperties(prefix = "feature-flag")
 public class FeatureFlagProperties {
 
+    /** Created by Spring Boot when binding {@code feature-flag.*}. */
+    public FeatureFlagProperties() {}
+
     private String serviceName;
     private String environment = "dev";
     private boolean strict = false;
     private Map<String, String> defaults = new HashMap<>();
     private Consul consul = new Consul();
 
+    /**
+     * Name of this service in the Consul key path.
+     *
+     * @return the service name
+     */
     public String getServiceName() { return serviceName; }
+
+    /**
+     * Sets the name of this service in the Consul key path.
+     *
+     * @param serviceName the service name
+     */
     public void setServiceName(String serviceName) { this.serviceName = serviceName; }
 
+    /**
+     * Environment in the Consul key path. Default {@code dev}.
+     *
+     * @return the environment
+     */
     public String getEnvironment() { return environment; }
+
+    /**
+     * Sets the environment in the Consul key path.
+     *
+     * @param environment the environment
+     */
     public void setEnvironment(String environment) { this.environment = environment; }
 
+    /**
+     * Whether startup fails when an annotated flag is missing in Consul.
+     *
+     * @return whether strict mode is on
+     */
     public boolean isStrict() { return strict; }
+
+    /**
+     * Turns strict mode on or off.
+     *
+     * @param strict whether startup fails when an annotated flag is missing in Consul
+     */
     public void setStrict(boolean strict) { this.strict = strict; }
 
     /**
