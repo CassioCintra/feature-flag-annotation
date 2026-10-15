@@ -21,6 +21,12 @@ public class FeatureFlagCacheService {
                 .maximumSize(1_000)
                 .recordStats()
                 .build();
+        properties.getDefaults().forEach((flagName, value) -> {
+            if (!FeatureFlagProperties.isValidDefault(value)) {
+                log.warn("Default for flag '{}' is '{}', not true or false. The flag will be treated as disabled.",
+                        flagName, value);
+            }
+        });
     }
 
     public boolean isEnabled(String flagName, boolean annotationDefault) {
@@ -36,9 +42,15 @@ public class FeatureFlagCacheService {
         return fallback;
     }
 
-    public void populateAll(Map<String, Boolean> flags) {
+    /**
+     * Replaces the cache content. Flags absent from {@code flags} are removed.
+     *
+     * @param flags flag name to enabled state
+     */
+    public void replaceAll(Map<String, Boolean> flags) {
         cache.putAll(flags);
-        log.info("Cache populated with {} flag(s) via HTTP bootstrap.", flags.size());
+        cache.asMap().keySet().retainAll(flags.keySet());
+        log.info("Cache replaced with {} flag(s) from Consul.", flags.size());
     }
 
     public void put(String flagName, boolean enabled) {

@@ -18,7 +18,7 @@ class FeatureFlagCacheServiceTest {
         FeatureFlagProperties properties = new FeatureFlagProperties();
         properties.setServiceName("service-example");
         properties.setEnvironment("dev");
-        properties.setDefaults(Map.of("new-checkout", false));
+        properties.setDefaults(Map.of("new-checkout", "false"));
 
         cacheService = new FeatureFlagCacheService(properties);
     }
@@ -42,8 +42,8 @@ class FeatureFlagCacheServiceTest {
     }
 
     @Test
-    void populateAll_shouldLoadAllFlagsIntoCache() {
-        cacheService.populateAll(Map.of(
+    void replaceAll_shouldLoadAllFlagsIntoCache() {
+        cacheService.replaceAll(Map.of(
                 "new-checkout", true,
                 "pix-payment", false
         ));
@@ -51,6 +51,28 @@ class FeatureFlagCacheServiceTest {
         assertThat(cacheService.isEnabled("new-checkout", false)).isTrue();
         assertThat(cacheService.isEnabled("pix-payment", true)).isFalse();
         assertThat(cacheService.size()).isEqualTo(2);
+    }
+
+    @Test
+    void replaceAll_shouldRemoveFlagsAbsentFromTheNewContent() {
+        cacheService.put("new-checkout", true);
+        cacheService.put("pix-payment", true);
+
+        cacheService.replaceAll(Map.of("pix-payment", false));
+
+        assertThat(cacheService.contains("new-checkout")).isFalse();
+        assertThat(cacheService.isEnabled("pix-payment", true)).isFalse();
+    }
+
+    @Test
+    void cacheMiss_emptyOrInvalidDefault_shouldBeDisabledIgnoringAnnotationDefault() {
+        var properties = new FeatureFlagProperties();
+        properties.setDefaults(Map.of("new-checkout", "", "pix-payment", "yes"));
+
+        var service = new FeatureFlagCacheService(properties);
+
+        assertThat(service.isEnabled("new-checkout", true)).isFalse();
+        assertThat(service.isEnabled("pix-payment", true)).isFalse();
     }
 
     @Test
