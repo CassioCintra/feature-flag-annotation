@@ -3,7 +3,7 @@
 Shared feature flag library for Spring Boot services with:
 
 - **Consul KV** — loads the service flags on startup and follows every change with Consul blocking queries
-- **Per-environment isolation** — each instance reads only `feature-flags/{service}/{environment}/`
+- **Per-workspace and per-environment isolation** — each instance reads only `feature-flags/{workspace}/{service}/{environment}/`
 - **Strict Mode** — opt-in: blocks startup if any annotated flag is not found in Consul
 - **Caffeine Local Cache** — zero-latency lookups, no time-based expiration
 - **Layered Fallback** — never brings down the application if Consul is unavailable
@@ -18,7 +18,7 @@ Shared feature flag library for Spring Boot services with:
 Application starts
       │
       ▼
-GET /v1/kv/feature-flags/{service}/{environment}/?recurse
+GET /v1/kv/feature-flags/{workspace}/{service}/{environment}/?recurse
       │
       ├── Success → replaces the Caffeine cache with the flags found
       └── Failure → application starts with configured default values (startup is not blocked)
@@ -52,16 +52,20 @@ Virtual thread watches the same prefix (Consul blocking query)
 ## Consul layout
 
 The flags are written by `ms-feature-flags-management`, the source of truth. Each key holds
-the effective value of one flag in one environment:
+the effective value of one flag in one environment of one workspace:
 
 ```
 feature-flags/
-└── checkout-service/
-    ├── dev/
-    │   └── new-checkout   → {"enabled": true}
-    └── prod/
-        └── new-checkout   → {"enabled": false}
+└── 7a1c0e2e-4d5b-4c8e-9f10-2b3c4d5e6f70/      ← workspace (UUID)
+    └── checkout-service/
+        ├── dev/
+        │   └── new-checkout   → {"enabled": true}
+        └── prod/
+            └── new-checkout   → {"enabled": false}
 ```
+
+The workspace comes from the `workspace_id` claim of the JWT used to log in to Consul, so the
+application does not configure it. Without a token, set `feature-flag.workspace-id`.
 
 Keys with any other value are ignored and logged as a warning.
 
@@ -73,7 +77,7 @@ Keys with any other value are ignored and logged as a warning.
 <dependency>
     <groupId>io.github.cassiocintra</groupId>
     <artifactId>feature-flag</artifactId>
-    <version>2.0.0</version>
+    <version>3.0.0</version>
 </dependency>
 ```
 
@@ -86,6 +90,7 @@ feature-flag:
   service-name: checkout-service                 # required
   environment: ${spring.profiles.active:dev}     # required
   strict: false                                  # true: blocks startup if any annotated flag is missing
+  workspace-id:                                  # only without a token; otherwise read from the JWT
   consul:
     url: http://consul:8500                      # enables the Consul sync
     auth-method: ms-auth                         # default: ms-auth
@@ -210,8 +215,9 @@ public class GlobalExceptionHandler {
 ## Consul ACL login
 
 With ACL enabled, the library logs in through a Consul JWT auth method (`/v1/acl/login`)
-using an access token from your OAuth2 provider. The token needs the `flags:read` scope
-and the `consul` audience. When Consul rejects the token (it lasts up to 15 minutes),
+using an access token from your OAuth2 provider. The token needs the `flags:read` scope,
+the `consul` audience and a `workspace_id` claim with the UUID of the workspace; Consul only
+lets it read `feature-flags/{workspace_id}/`. When Consul rejects the token (it lasts up to 15 minutes),
 the library logs in again.
 
 Without an `OAuth2AuthorizedClientManager` bean, Consul is called without a token.
@@ -292,6 +298,14 @@ The cache never expires by time. It is replaced on every change under the servic
 | `ConsulJwtSupplier` | Requires `feature-flag.consul.url` + `spring-boot-starter-security-oauth2-client` + `OAuth2AuthorizedClientManager` bean |
 
 ---
+
+## Migrating from 2.x
+
+- Consul keys moved from `feature-flags/{service}/{environment}/` to `feature-flags/{workspace}/{service}/{environment}/`.
+  `ms-feature-flags-management` writes the new layout.
+- The OAuth2 client of the application must be registered with a workspace, so its token carries the `workspace_id` claim.
+  Without a token, set `feature-flag.workspace-id`.
+- `ConsulFlagSync` takes the workspace resolver as a new constructor argument.
 
 ## Migrating from 1.x
 

@@ -4,6 +4,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.UUID;
 
 /**
  * Library configuration properties read from application.properties.
@@ -27,6 +28,7 @@ public class FeatureFlagProperties {
 
     private String serviceName;
     private String environment = "dev";
+    private UUID workspaceId;
     private boolean strict = false;
     private Map<String, String> defaults = new HashMap<>();
     private Consul consul = new Consul();
@@ -58,6 +60,22 @@ public class FeatureFlagProperties {
      * @param environment the environment
      */
     public void setEnvironment(String environment) { this.environment = environment; }
+
+    /**
+     * Workspace in the Consul key path, used only when Consul is called without a token.
+     * With a {@link cassio.annotations.consul.ConsulJwtSupplier}, the workspace comes from the
+     * {@code workspace_id} claim of the JWT and this value is ignored.
+     *
+     * @return the workspace, or {@code null} if not configured
+     */
+    public UUID getWorkspaceId() { return workspaceId; }
+
+    /**
+     * Sets the workspace used when Consul is called without a token.
+     *
+     * @param workspaceId the workspace
+     */
+    public void setWorkspaceId(UUID workspaceId) { this.workspaceId = workspaceId; }
 
     /**
      * Whether startup fails when an annotated flag is missing in Consul.
