@@ -50,6 +50,7 @@ class ConsulFlagSyncTest {
     private static RSAKey signingKey;
     private static RestClient admin;
 
+    private final UUID workspace = UUID.randomUUID();
     private final String service = "svc-" + UUID.randomUUID();
     private final AtomicInteger logins = new AtomicInteger();
     private final FeatureFlagScanner scanner = mock(FeatureFlagScanner.class);
@@ -94,11 +95,12 @@ class ConsulFlagSyncTest {
 
     @Test
     void loadsOnlyTheFlagsOfItsServiceAndEnvironment() {
-        putFlag(service + "/dev/new-checkout", "{\"enabled\": true}");
-        putFlag(service + "/dev/pix-payment", "{\"enabled\": false}");
-        putFlag(service + "/dev/broken", "not json");
-        putFlag(service + "/prod/prod-only", "{\"enabled\": true}");
-        putFlag("other-service/dev/other-flag", "{\"enabled\": true}");
+        putFlag(workspace + "/" + service + "/dev/new-checkout", "{\"enabled\": true}");
+        putFlag(workspace + "/" + service + "/dev/pix-payment", "{\"enabled\": false}");
+        putFlag(workspace + "/" + service + "/dev/broken", "not json");
+        putFlag(workspace + "/" + service + "/prod/prod-only", "{\"enabled\": true}");
+        putFlag(workspace + "/other-service/dev/other-flag", "{\"enabled\": true}");
+        putFlag(UUID.randomUUID() + "/" + service + "/dev/other-workspace-flag", "{\"enabled\": true}");
 
         startSync(consulUrl());
 
@@ -107,22 +109,23 @@ class ConsulFlagSyncTest {
         assertThat(cache.contains("broken")).isFalse();
         assertThat(cache.contains("prod-only")).isFalse();
         assertThat(cache.contains("other-flag")).isFalse();
+        assertThat(cache.contains("other-workspace-flag")).isFalse();
         assertThat(cache.size()).isEqualTo(2);
     }
 
     @Test
     void followsChangesAndRemovalsInConsul() {
-        putFlag(service + "/dev/new-checkout", "{\"enabled\": false}");
+        putFlag(workspace + "/" + service + "/dev/new-checkout", "{\"enabled\": false}");
         startSync(consulUrl());
         assertThat(cache.isEnabled("new-checkout", true)).isFalse();
 
-        putFlag(service + "/dev/new-checkout", "{\"enabled\": true}");
+        putFlag(workspace + "/" + service + "/dev/new-checkout", "{\"enabled\": true}");
         await().atMost(Duration.ofSeconds(10)).until(() -> cache.isEnabled("new-checkout", false));
 
-        putFlag(service + "/dev/pix-payment", "{\"enabled\": true}");
+        putFlag(workspace + "/" + service + "/dev/pix-payment", "{\"enabled\": true}");
         await().atMost(Duration.ofSeconds(10)).until(() -> cache.contains("pix-payment"));
 
-        admin.delete().uri("/v1/kv/feature-flags/" + service + "/dev/new-checkout").retrieve().toBodilessEntity();
+        admin.delete().uri("/v1/kv/feature-flags/" + workspace + "/" + service + "/dev/new-checkout").retrieve().toBodilessEntity();
         await().atMost(Duration.ofSeconds(10)).until(() -> !cache.contains("new-checkout"));
         assertThat(cache.isEnabled("new-checkout", false)).isFalse();
     }
@@ -137,7 +140,7 @@ class ConsulFlagSyncTest {
         tokens.forEach(token -> admin.delete().uri("/v1/acl/token/" + token.get("AccessorID"))
                 .retrieve().toBodilessEntity());
 
-        putFlag(service + "/dev/new-checkout", "{\"enabled\": true}");
+        putFlag(workspace + "/" + service + "/dev/new-checkout", "{\"enabled\": true}");
 
         await().atMost(Duration.ofSeconds(10)).until(() -> cache.isEnabled("new-checkout", false));
         assertThat(logins.get()).isGreaterThanOrEqualTo(2);
@@ -145,7 +148,7 @@ class ConsulFlagSyncTest {
 
     @Test
     void strictModeBlocksStartupWhenAnAnnotatedFlagIsMissing() {
-        putFlag(service + "/dev/new-checkout", "{\"enabled\": true}");
+        putFlag(workspace + "/" + service + "/dev/new-checkout", "{\"enabled\": true}");
         when(scanner.scan()).thenReturn(List.of(
                 StrictService.class.getAnnotation(FeatureFlag.class)));
 
@@ -177,18 +180,23 @@ class ConsulFlagSyncTest {
         cache = new FeatureFlagCacheService(properties);
 
         var client = new ConsulClient(url, "ms-auth", this::signedJwt, Duration.ofSeconds(40));
-        sync = new ConsulFlagSync(properties, cache, scanner, client,
+        sync = new ConsulFlagSync(properties, cache, scanner, client, () -> ConsulWorkspace.fromJwt(jwt()),
                 Duration.ofSeconds(30), Duration.ofMillis(200));
         sync.start();
     }
 
     private String signedJwt() {
         logins.incrementAndGet();
+        return jwt();
+    }
+
+    private String jwt() {
         try {
             var claims = new JWTClaimsSet.Builder()
                     .subject("checkout-service")
                     .audience("consul")
                     .claim("scope", List.of("flags:read"))
+                    .claim("workspace_id", workspace.toString())
                     .issueTime(new Date())
                     .expirationTime(Date.from(Instant.now().plusSeconds(300)))
                     .build();

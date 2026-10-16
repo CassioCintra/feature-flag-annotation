@@ -7,6 +7,7 @@ import cassio.annotations.cache.FeatureFlagCacheService;
 import cassio.annotations.consul.ConsulClient;
 import cassio.annotations.consul.ConsulFlagSync;
 import cassio.annotations.consul.ConsulJwtSupplier;
+import cassio.annotations.consul.ConsulWorkspace;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -18,6 +19,9 @@ import org.springframework.context.annotation.EnableAspectJAutoProxy;
 import org.springframework.context.annotation.Import;
 
 import java.time.Duration;
+import java.util.Objects;
+import java.util.UUID;
+import java.util.function.Supplier;
 
 /**
  * Auto-configuration for the feature flag library.
@@ -96,7 +100,9 @@ public class FeatureFlagAutoConfig {
 
     /**
      * Consul sync, registered only when {@code feature-flag.consul.url} is set.
-     * Without a {@link ConsulJwtSupplier} bean, Consul is called without a token.
+     * Without a {@link ConsulJwtSupplier} bean, Consul is called without a token and the workspace
+     * comes from {@code feature-flag.workspace-id}; with one, it comes from the {@code workspace_id}
+     * claim of the JWT.
      *
      * @param properties         library configuration
      * @param cacheService       flag cache
@@ -112,9 +118,13 @@ public class FeatureFlagAutoConfig {
                                          FeatureFlagScanner featureFlagScanner,
                                          ObjectProvider<ConsulJwtSupplier> jwtSupplier) {
         var consul = properties.getConsul();
-        var client = new ConsulClient(consul.getUrl(), consul.getAuthMethod(),
-                jwtSupplier.getIfAvailable(), CONSUL_WAIT.plusMinutes(1));
-        return new ConsulFlagSync(properties, cacheService, featureFlagScanner, client,
+        var jwt = jwtSupplier.getIfAvailable();
+        var client = new ConsulClient(consul.getUrl(), consul.getAuthMethod(), jwt, CONSUL_WAIT.plusMinutes(1));
+        Supplier<UUID> workspaceId = jwt != null
+                ? () -> ConsulWorkspace.fromJwt(jwt.get())
+                : () -> Objects.requireNonNull(properties.getWorkspaceId(),
+                        "feature-flag.workspace-id is required when Consul is called without a token");
+        return new ConsulFlagSync(properties, cacheService, featureFlagScanner, client, workspaceId,
                 CONSUL_WAIT, CONSUL_RETRY_DELAY);
     }
 }

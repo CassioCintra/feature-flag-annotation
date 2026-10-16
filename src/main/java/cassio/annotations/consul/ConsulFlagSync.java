@@ -13,13 +13,16 @@ import org.springframework.context.event.EventListener;
 import java.time.Duration;
 import java.util.List;
 import java.util.Set;
+import java.util.UUID;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 /**
  * Keeps the flag cache in sync with Consul.
  *
- * <p>On startup it loads every flag under {@code feature-flags/{service}/{environment}/} and applies
- * strict mode, then watches that prefix with blocking queries on a virtual thread. Each change replaces
+ * <p>On startup it loads every flag under {@code feature-flags/{workspace}/{service}/{environment}/} and
+ * applies strict mode, then watches that prefix with blocking queries on a virtual thread. The workspace
+ * is resolved on the first read and retried like any other read failure. Each change replaces
  * the cache, so a key removed from Consul falls back to the defaults. If Consul is unavailable, the
  * application starts with the defaults and the watch keeps retrying. After a failure the watch reads
  * from index 0, so a restarted Consul, whose index starts over, is seen as soon as it answers.
@@ -32,8 +35,10 @@ public class ConsulFlagSync implements DisposableBean {
     private final FeatureFlagCacheService cacheService;
     private final FeatureFlagScanner scanner;
     private final ConsulClient client;
+    private final Supplier<UUID> workspaceId;
     private final Duration wait;
     private final Duration retryDelay;
+    private volatile String prefix;
     private volatile boolean running;
     private Thread watcher;
 
@@ -44,6 +49,7 @@ public class ConsulFlagSync implements DisposableBean {
      * @param cacheService cache replaced on every change
      * @param scanner      finds the annotated flags checked by strict mode
      * @param client       Consul client
+     * @param workspaceId  resolves the workspace whose flags are read
      * @param wait         maximum time each blocking query waits for a change
      * @param retryDelay   pause after a failed read before trying again
      */
@@ -51,12 +57,14 @@ public class ConsulFlagSync implements DisposableBean {
                           FeatureFlagCacheService cacheService,
                           FeatureFlagScanner scanner,
                           ConsulClient client,
+                          Supplier<UUID> workspaceId,
                           Duration wait,
                           Duration retryDelay) {
         this.properties = properties;
         this.cacheService = cacheService;
         this.scanner = scanner;
         this.client = client;
+        this.workspaceId = workspaceId;
         this.wait = wait;
         this.retryDelay = retryDelay;
     }
@@ -68,11 +76,8 @@ public class ConsulFlagSync implements DisposableBean {
      */
     @EventListener(ApplicationReadyEvent.class)
     public void start() {
-        var prefix = "feature-flags/" + properties.getServiceName() + "/" + properties.getEnvironment() + "/";
-        log.info("Loading feature flags from Consul prefix '{}'", prefix);
-
         var initialIndex = 0L;
-        var snapshot = readInitialSnapshot(prefix);
+        var snapshot = readInitialSnapshot();
         if (snapshot != null) {
             cacheService.replaceAll(snapshot.flags());
             initialIndex = snapshot.index();
@@ -81,7 +86,7 @@ public class ConsulFlagSync implements DisposableBean {
 
         running = true;
         var startIndex = initialIndex;
-        watcher = Thread.ofVirtual().name("feature-flag-consul-watch").start(() -> watch(prefix, startIndex));
+        watcher = Thread.ofVirtual().name("feature-flag-consul-watch").start(() -> watch(startIndex));
     }
 
     /**
@@ -93,9 +98,18 @@ public class ConsulFlagSync implements DisposableBean {
         if (watcher != null) watcher.interrupt();
     }
 
-    private ConsulClient.Snapshot readInitialSnapshot(String prefix) {
+    private String prefix() {
+        if (prefix == null) {
+            prefix = "feature-flags/" + workspaceId.get() + "/" + properties.getServiceName()
+                    + "/" + properties.getEnvironment() + "/";
+            log.info("Loading feature flags from Consul prefix '{}'", prefix);
+        }
+        return prefix;
+    }
+
+    private ConsulClient.Snapshot readInitialSnapshot() {
         try {
-            return client.read(prefix, 0, Duration.ZERO);
+            return client.read(prefix(), 0, Duration.ZERO);
         } catch (RuntimeException ex) {
             log.error("Could not load feature flags from Consul. " +
                     "Application will start with configured default values. Error: {}", ex.getMessage());
@@ -103,10 +117,10 @@ public class ConsulFlagSync implements DisposableBean {
         }
     }
 
-    private void watch(String prefix, long index) {
+    private void watch(long index) {
         while (running) {
             try {
-                var snapshot = client.read(prefix, index, wait);
+                var snapshot = client.read(prefix(), index, wait);
                 if (snapshot.index() != index) cacheService.replaceAll(snapshot.flags());
                 index = indexWentBackwards(snapshot, index) ? 0 : snapshot.index();
             } catch (RuntimeException ex) {
